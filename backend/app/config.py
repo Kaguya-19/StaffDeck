@@ -14,6 +14,12 @@ class Settings(BaseSettings):
     model_api_timeout_seconds: float = 600.0
     model_thinking_mode: str = ""
     model_thinking_models: str = ""
+    # PilotDeck AgentLoop sidecar is opt-in while the Harness v2 adapter is
+    # validated. Keep the legacy in-process executor as the default.
+    pilotdeck_agent_loop_enabled: bool = False
+    pilotdeck_agent_loop_command: str = ""
+    pilotdeck_agent_loop_cwd: str = ""
+    pilotdeck_agent_loop_timeout_seconds: float = 900.0
     tool_timeout_seconds: float = 8.0
     a2a_task_timeout_seconds: float = 600.0
     a2a_poll_interval_seconds: float = 0.5

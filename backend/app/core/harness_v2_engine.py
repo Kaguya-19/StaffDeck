@@ -22,6 +22,12 @@ from app.core.harness_attachments import (
     validated_task_image_payloads,
 )
 from app.core.harness_capability_invoker import HarnessCapabilityInvoker
+from app.core.pilotdeck_agent_loop_client import (
+    PilotDeckAgentLoopClient,
+    PilotDeckAgentLoopError,
+    PilotDeckExecutionIdentity,
+)
+from app.core.pilotdeck_module_bridge import StaffDeckPilotDeckModuleBridge
 from app.core.published_deliverables import list_published_deliverables
 from app.core.harness_session_lease import (
     HarnessSessionLeaseLost,
@@ -64,6 +70,8 @@ from app.db.models import (
 )
 from app.knowledge.citations import compact_knowledge_citation_labels
 from app.memory.service import memory_read
+from app.config import get_settings
+from app.llm import LLMClient
 from app.session.helpers import public_session
 from app.session.session_schema import (
     ChatTurnRequest,
@@ -957,18 +965,63 @@ class HarnessV2Engine:
                 step_deadline_monotonic=step_deadline_monotonic,
             )
 
-            result = self.task_agent.run(
-                requirement,
-                model_config,
-                invoker.invoke,
-                max_actions=remaining_actions,
-                trace_sink=trace,
-                is_cancelled=lambda: self._is_cancelled(request, session),
-                image_payloads=image_payloads,
-                step_deadline_monotonic=step_deadline_monotonic,
-                step_timeout_seconds=step_timeout_seconds,
-                checkpoint=loop_checkpoint,
-            )
+            if _pilotdeck_sidecar_enabled():
+                settings = get_settings()
+                client = PilotDeckAgentLoopClient(
+                    settings.pilotdeck_agent_loop_command,
+                    cwd=settings.pilotdeck_agent_loop_cwd or None,
+                    timeout_seconds=settings.pilotdeck_agent_loop_timeout_seconds,
+                )
+                identity = PilotDeckExecutionIdentity(
+                    tenant_id=request.tenant_id,
+                    session_id=session.id,
+                    turn_id=str(self.user_message_id or request.client_turn_id or row.id),
+                    run_id=run.id,
+                    operation_id=str(agent_loop.id),
+                    idempotency_key=f"task-frame:{row.id}",
+                    step_id=frame.target_step_id,
+                )
+                bridge = StaffDeckPilotDeckModuleBridge(
+                    model_client=LLMClient(model_config),
+                    capability_invoker=invoker,
+                    checkpoint_sink=lambda payload: _save_sidecar_checkpoint(
+                        self.store,
+                        agent_loop,
+                        payload,
+                        run.id,
+                    ),
+                )
+                try:
+                    result = client.execute(
+                        requirement,
+                        identity=identity,
+                        checkpoint=loop_checkpoint,
+                        bridge=bridge,
+                        trace_sink=trace,
+                        is_cancelled=lambda: self._is_cancelled(request, session),
+                        deadline_monotonic=step_deadline_monotonic,
+                    )
+                except PilotDeckAgentLoopError as exc:
+                    if exc.code == "CANCELLED":
+                        raise HarnessExecutionCancelled(str(exc)) from exc
+                    if exc.result_unknown:
+                        raise HarnessExecutionFenced(str(exc)) from exc
+                    raise RuntimeError(f"PilotDeck AgentLoop failed [{exc.code}]: {exc}") from exc
+                finally:
+                    client.close()
+            else:
+                result = self.task_agent.run(
+                    requirement,
+                    model_config,
+                    invoker.invoke,
+                    max_actions=remaining_actions,
+                    trace_sink=trace,
+                    is_cancelled=lambda: self._is_cancelled(request, session),
+                    image_payloads=image_payloads,
+                    step_deadline_monotonic=step_deadline_monotonic,
+                    step_timeout_seconds=step_timeout_seconds,
+                    checkpoint=loop_checkpoint,
+                )
             if request.channel == "human_handoff_resume" and result.status == "handoff":
                 # The human reply is already the handoff completion signal. Do not
                 # re-enter the same terminal handoff node during the resume turn.
@@ -2047,3 +2100,30 @@ def _dependency_order(
             resolved.add(row.task_id)
             remaining.remove(row)
     return ordered
+
+
+def _pilotdeck_sidecar_enabled() -> bool:
+    settings = get_settings()
+    return bool(
+        settings.pilotdeck_agent_loop_enabled
+        and str(settings.pilotdeck_agent_loop_command or "").strip()
+    )
+
+
+def _save_sidecar_checkpoint(
+    store: TaskFrameStore,
+    agent_loop: Any,
+    payload: dict[str, Any],
+    run_id: str,
+) -> dict[str, Any]:
+    checkpoint = payload.get("checkpoint")
+    if not isinstance(checkpoint, dict):
+        checkpoint = payload
+    store.save_agent_loop_checkpoint(
+        agent_loop,
+        dict(checkpoint),
+        status="active",
+        last_run_id=run_id,
+    )
+    store.db.commit()
+    return {"accepted": True}
