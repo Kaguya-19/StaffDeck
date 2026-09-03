@@ -1,26 +1,36 @@
 from __future__ import annotations
 
+import json
 import sys
+
+import pytest
 
 from app.core.pilotdeck_agent_loop_client import (
     PilotDeckAgentLoopClient,
+    PilotDeckAgentLoopError,
+    PilotDeckExecutionContext,
     PilotDeckExecutionIdentity,
 )
-from app.core.task_request_compiler import TaskRequirement
-
+from app.core.task_request_compiler import CapabilityDescriptor, CapabilityManifest, TaskRequirement
 
 SIDECAR = r'''
 import json, sys
+CURRENT_RUN_ID = ""
+CURRENT_OPERATION_ID = ""
+CURRENT_REQUEST_ID = ""
 for line in sys.stdin:
     msg = json.loads(line)
     if msg.get("method") == "hello":
         print(json.dumps({"kind":"response","messageId":"hello-res","inReplyTo":msg["messageId"],"ok":True,"connectionGeneration":"test-connection"}), flush=True)
     elif msg.get("method") == "execute":
+        CURRENT_RUN_ID = msg["runId"]
+        CURRENT_OPERATION_ID = msg["operationId"]
+        CURRENT_REQUEST_ID = msg["requestId"]
         print(json.dumps({"kind":"response","messageId":"accepted","inReplyTo":msg["messageId"],"requestId":msg["requestId"],"ok":True,"streamId":"stream-1","cursor":0}), flush=True)
         print(json.dumps({"kind":"request","messageId":"module-call","method":"module_call","runId":msg["runId"],"operationId":msg["operationId"],"requestId":"module-request","module":"capability","payload":{"name":"lookup","arguments":{}}}), flush=True)
     elif msg.get("kind") == "response" and msg.get("inReplyTo") == "module-call":
-        print(json.dumps({"kind":"event","messageId":"event-1","eventType":"agent.tool_result","streamId":"stream-1","sequence":0,"runId":"run-1","operationId":"op-1","requestId":"request-1","final":False,"payload":{"tool":"lookup"}}), flush=True)
-        print(json.dumps({"kind":"event","messageId":"final-1","eventType":"agent.execute.completed","streamId":"stream-1","sequence":1,"runId":"run-1","operationId":"op-1","requestId":"request-1","final":True,"outcome":"completed","payload":{"result":{"task_frame_id":"frame-1","status":"completed","reply_fragment":"done","action_count":1}}}), flush=True)
+        print(json.dumps({"kind":"event","messageId":"event-1","eventType":"agent.tool_result","streamId":"stream-1","sequence":0,"runId":CURRENT_RUN_ID,"operationId":CURRENT_OPERATION_ID,"requestId":CURRENT_REQUEST_ID,"final":False,"payload":{"tool":"lookup"}}), flush=True)
+        print(json.dumps({"kind":"event","messageId":"final-1","eventType":"agent.execute.completed","streamId":"stream-1","sequence":1,"runId":CURRENT_RUN_ID,"operationId":CURRENT_OPERATION_ID,"requestId":CURRENT_REQUEST_ID,"final":True,"outcome":"completed","payload":{"result":{"task_frame_id":"frame-1","status":"completed","reply_fragment":"done","action_count":1}}}), flush=True)
 '''
 
 
@@ -48,3 +58,197 @@ def test_sidecar_client_dispatches_host_module_call_and_decodes_result() -> None
     assert result.status == "completed"
     assert result.reply_fragment == "done"
     assert traces == ["agent.tool_result"]
+
+
+def _identity() -> PilotDeckExecutionIdentity:
+    return PilotDeckExecutionIdentity(
+        tenant_id="tenant-1",
+        session_id="session-1",
+        turn_id="turn-1",
+        run_id="run-1",
+        operation_id="op-1",
+        idempotency_key="frame-1",
+    )
+
+
+def _client_script(final_payload: str, *, outcome: str = "completed", request_id_expr: str = 'msg["requestId"]', code: str | None = None) -> str:
+    code_field = f",\"code\":{code!r}" if code is not None else ""
+    return f'''
+import json, sys
+for line in sys.stdin:
+    msg = json.loads(line)
+    if msg.get("method") == "hello":
+        print(json.dumps({{"kind":"response","messageId":"hello-res","inReplyTo":msg["messageId"],"ok":True,"connectionGeneration":"test-connection"}}), flush=True)
+    elif msg.get("method") == "execute":
+        print(json.dumps({{"kind":"response","messageId":"accepted","inReplyTo":msg["messageId"],"requestId":msg["requestId"],"ok":True,"streamId":"stream-1","cursor":0}}), flush=True)
+        print(json.dumps({{"kind":"event","messageId":"final-1","eventType":"agent.execute.completed","streamId":"stream-1","sequence":0,"runId":msg["runId"],"operationId":msg["operationId"],"requestId":{request_id_expr},"final":True,"outcome":{outcome!r}{code_field},"payload":{final_payload}}}), flush=True)
+'''
+
+
+def test_client_rejects_failed_outcome_even_when_payload_looks_successful() -> None:
+    client = PilotDeckAgentLoopClient([sys.executable, "-u", "-c", _client_script(
+        '{"result":{"task_frame_id":"frame-1","status":"completed"}}',
+        outcome="failed",
+    )])
+    with pytest.raises(PilotDeckAgentLoopError) as exc_info:
+        client.execute(_requirement(), identity=_identity())
+    client.close()
+    assert getattr(exc_info.value, "code", "") == "EXECUTE_FAILED"
+
+
+def test_client_rejects_malformed_completed_payload() -> None:
+    client = PilotDeckAgentLoopClient([sys.executable, "-u", "-c", _client_script(
+        '{"result":{"task_frame_id":"frame-1","status":"not-a-status"}}',
+    )])
+    with pytest.raises(PilotDeckAgentLoopError) as exc_info:
+        client.execute(_requirement(), identity=_identity())
+    client.close()
+    assert getattr(exc_info.value, "code", "") == "INVALID_RESULT"
+
+
+def test_client_maps_generic_agent_turn_success_to_staffdeck_result() -> None:
+    payload = {
+        "result": {
+            "type": "success",
+            "sessionId": "session-1",
+            "turnId": "turn-1",
+            "stopReason": "completed",
+            "usage": {"totalTokens": 4},
+            "permissionDenials": [],
+            "turns": 1,
+            "startedAt": "2026-01-01T00:00:00Z",
+            "completedAt": "2026-01-01T00:00:01Z",
+            "finalMessage": {"role": "assistant", "content": [{"type": "text", "text": "普通成功回复"}]},
+        },
+        "messages": [],
+    }
+    client = PilotDeckAgentLoopClient([sys.executable, "-u", "-c", _client_script(json.dumps(payload))])
+    result = client.execute(_requirement(), identity=_identity())
+    client.close()
+    assert result.status == "completed"
+    assert result.reply_fragment == "普通成功回复"
+    assert result.action_count == 1
+
+
+def test_client_maps_action_budget_module_failure_to_action_budget_result() -> None:
+    client = PilotDeckAgentLoopClient([sys.executable, "-u", "-c", _client_script(
+        '{"error":{"code":"ACTION_BUDGET_EXHAUSTED"}}',
+        outcome="failed",
+        code="ACTION_BUDGET_EXHAUSTED",
+    )])
+    result = client.execute(_requirement(), identity=_identity())
+    client.close()
+    assert result.status == "action_budget"
+    assert result.error == {"code": "ACTION_BUDGET_EXHAUSTED", "message": "StaffDeck action budget exhausted."}
+
+
+def test_client_ignores_event_from_old_request_id() -> None:
+    script = r'''
+import json, sys
+for line in sys.stdin:
+    msg = json.loads(line)
+    if msg.get("method") == "hello":
+        print(json.dumps({"kind":"response","messageId":"hello-res","inReplyTo":msg["messageId"],"ok":True,"connectionGeneration":"test-connection"}), flush=True)
+    elif msg.get("method") == "execute":
+        print(json.dumps({"kind":"response","messageId":"accepted","inReplyTo":msg["messageId"],"requestId":msg["requestId"],"ok":True,"streamId":"stream-1","cursor":0}), flush=True)
+        for request_id, sequence in [("old-request", 0), (msg["requestId"], 0)]:
+            print(json.dumps({"kind":"event","messageId":"event-"+request_id,"eventType":"agent.event","streamId":"stream-1","sequence":sequence,"runId":msg["runId"],"operationId":msg["operationId"],"requestId":request_id,"final":False,"payload":{"requestId":request_id}}), flush=True)
+        print(json.dumps({"kind":"event","messageId":"final-1","eventType":"agent.execute.completed","streamId":"stream-1","sequence":1,"runId":msg["runId"],"operationId":msg["operationId"],"requestId":msg["requestId"],"final":True,"outcome":"completed","payload":{"result":{"task_frame_id":"frame-1","status":"completed","reply_fragment":"current","action_count":1}}}), flush=True)
+'''
+    client = PilotDeckAgentLoopClient([sys.executable, "-u", "-c", script])
+    traces: list[tuple[str, dict[str, object]]] = []
+    result = client.execute(_requirement(), identity=_identity(), trace_sink=lambda event, payload: traces.append((event, payload)))
+    client.close()
+    assert result.reply_fragment == "current"
+    assert traces == [("agent.event", {"requestId": "execute-2"})]
+
+
+def test_client_does_not_accept_completed_after_cancellation() -> None:
+    script = r'''
+import json, sys
+for line in sys.stdin:
+    msg = json.loads(line)
+    if msg.get("method") == "hello":
+        print(json.dumps({"kind":"response","messageId":"hello-res","inReplyTo":msg["messageId"],"ok":True,"connectionGeneration":"test-connection"}), flush=True)
+    elif msg.get("method") == "execute":
+        print(json.dumps({"kind":"response","messageId":"accepted","inReplyTo":msg["messageId"],"requestId":msg["requestId"],"ok":True,"streamId":"stream-1","cursor":0}), flush=True)
+    elif msg.get("method") == "cancel":
+        print(json.dumps({"kind":"event","messageId":"final-1","eventType":"agent.execute.completed","streamId":"stream-1","sequence":0,"runId":msg["runId"],"operationId":msg["operationId"],"requestId":msg["requestId"],"final":True,"outcome":"completed","payload":{"result":{"task_frame_id":"frame-1","status":"completed","reply_fragment":"late","action_count":1}}}), flush=True)
+'''
+    client = PilotDeckAgentLoopClient([sys.executable, "-u", "-c", script])
+    with pytest.raises(PilotDeckAgentLoopError) as exc_info:
+        client.execute(_requirement(), identity=_identity(), is_cancelled=lambda: True)
+    client.close()
+    assert getattr(exc_info.value, "code", "") == "CANCELLED_AFTER_REQUEST"
+
+
+def test_client_sends_ephemeral_execution_context() -> None:
+    script = r'''
+import json, sys
+for line in sys.stdin:
+    msg = json.loads(line)
+    if msg.get("method") == "hello":
+        print(json.dumps({"kind":"response","messageId":"hello-res","inReplyTo":msg["messageId"],"ok":True,"connectionGeneration":"test-connection"}), flush=True)
+    elif msg.get("method") == "execute":
+        payload = msg["payload"]
+        ok = payload.get("executionContext", {}).get("remainingActions") == 3 and payload.get("messages", [{}])[0].get("images")
+        result = {"task_frame_id":"frame-1","status":"completed","reply_fragment":"context-ok" if ok else "context-missing","action_count":1}
+        print(json.dumps({"kind":"response","messageId":"accepted","inReplyTo":msg["messageId"],"requestId":msg["requestId"],"ok":True,"streamId":"stream-1","cursor":0}), flush=True)
+        print(json.dumps({"kind":"event","messageId":"final-1","eventType":"agent.execute.completed","streamId":"stream-1","sequence":0,"runId":msg["runId"],"operationId":msg["operationId"],"requestId":msg["requestId"],"final":True,"outcome":"completed","payload":{"result":result}}), flush=True)
+'''
+    client = PilotDeckAgentLoopClient([sys.executable, "-u", "-c", script])
+    result = client.execute(
+        _requirement(),
+        identity=_identity(),
+        execution_context=PilotDeckExecutionContext(
+            remaining_actions=3,
+            conversation_context={"messages": [{"images": [{"type": "image_url", "image_url": {"url": "data:image/png;base64,AAAA"}}]}]},
+        ),
+    )
+    client.close()
+    assert result.reply_fragment == "context-ok"
+
+
+def test_client_projects_generic_payload_and_only_supported_seed_state() -> None:
+    script = r'''
+import json, sys
+for line in sys.stdin:
+    msg = json.loads(line)
+    if msg.get("method") == "hello":
+        print(json.dumps({"kind":"response","messageId":"hello-res","inReplyTo":msg["messageId"],"ok":True,"connectionGeneration":"test-connection"}), flush=True)
+    elif msg.get("method") == "execute":
+        payload = msg["payload"]
+        ok = (
+            set(payload) == {"task", "tools", "messages", "permissionContext", "executionContext", "seedState"}
+            and payload["task"]["prompt"].find('"goal": "lookup"') >= 0
+            and payload["tools"][0]["name"] == "lookup"
+            and payload["seedState"] == {"allowedReadFiles": ["/workspace/input.txt"]}
+        )
+        result = {"task_frame_id":"frame-1","status":"completed","reply_fragment":"generic-ok" if ok else "generic-missing","action_count":1}
+        print(json.dumps({"kind":"response","messageId":"accepted","inReplyTo":msg["messageId"],"requestId":msg["requestId"],"ok":True,"streamId":"stream-1","cursor":0}), flush=True)
+        print(json.dumps({"kind":"event","messageId":"final-1","eventType":"agent.execute.completed","streamId":"stream-1","sequence":0,"runId":msg["runId"],"operationId":msg["operationId"],"requestId":msg["requestId"],"final":True,"outcome":"completed","payload":{"result":result}}), flush=True)
+'''
+    client = PilotDeckAgentLoopClient([sys.executable, "-u", "-c", script])
+    requirement = TaskRequirement(
+        task_frame_id="frame-1",
+        kind="conversation",
+        goal="lookup",
+        capability_manifest=CapabilityManifest(available=[CapabilityDescriptor(
+            capability_id="lookup",
+            name="lookup",
+            kind="tool",
+            input_schema={"type": "object"},
+        )]),
+    )
+    result = client.execute(
+        requirement,
+        identity=_identity(),
+        checkpoint={"agentLoopSeedState": {"allowedReadFiles": ["/workspace/input.txt"]}, "hostOnly": "opaque"},
+        execution_context=PilotDeckExecutionContext(
+            remaining_actions=3,
+            conversation_context={"messages": [{"images": [{"type": "image_url", "image_url": {"url": "data:image/png;base64,AAAA"}}]}]},
+            permission_context={"mode": "default", "canPrompt": False},
+        ),
+    )
+    client.close()
+    assert result.reply_fragment == "generic-ok"

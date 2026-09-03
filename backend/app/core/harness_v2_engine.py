@@ -9,6 +9,7 @@ from typing import Any
 from sqlalchemy.exc import IntegrityError
 from sqlmodel import select
 
+from app.config import get_settings
 from app.core.cancellation import is_chat_turn_cancelled
 from app.core.capability_discovery import project_capability_manifest
 from app.core.capability_manifest import CapabilityManifestBuilder
@@ -18,17 +19,11 @@ from app.core.harness_agent import (
     HarnessTaskAgent,
 )
 from app.core.harness_attachments import (
+    isolated_attachment_context,
     materialize_task_attachments,
     validated_task_image_payloads,
 )
 from app.core.harness_capability_invoker import HarnessCapabilityInvoker
-from app.core.pilotdeck_agent_loop_client import (
-    PilotDeckAgentLoopClient,
-    PilotDeckAgentLoopError,
-    PilotDeckExecutionIdentity,
-)
-from app.core.pilotdeck_module_bridge import StaffDeckPilotDeckModuleBridge
-from app.core.published_deliverables import list_published_deliverables
 from app.core.harness_session_lease import (
     HarnessSessionLeaseLost,
     HarnessSessionLeaseStore,
@@ -39,6 +34,14 @@ from app.core.harness_session_lock import (
     release_harness_session,
 )
 from app.core.harness_turn_store import HarnessTurnStore
+from app.core.pilotdeck_agent_loop_client import (
+    PilotDeckAgentLoopClient,
+    PilotDeckAgentLoopError,
+    PilotDeckExecutionContext,
+    PilotDeckExecutionIdentity,
+)
+from app.core.pilotdeck_module_bridge import StaffDeckPilotDeckModuleBridge
+from app.core.published_deliverables import list_published_deliverables
 from app.core.slash_commands import (
     SlashCommandError,
     SlashCommandSelection,
@@ -69,9 +72,8 @@ from app.db.models import (
     Team,
 )
 from app.knowledge.citations import compact_knowledge_citation_labels
-from app.memory.service import memory_read
-from app.config import get_settings
 from app.llm import LLMClient
+from app.memory.service import memory_read
 from app.session.helpers import public_session
 from app.session.session_schema import (
     ChatTurnRequest,
@@ -924,6 +926,7 @@ class HarnessV2Engine:
                 )
             self.active_run_id = run.id
             self.db.commit()
+            run_id = run.id
 
             def trace(event_type: str, payload: dict[str, Any]) -> None:
                 self.events.record(
@@ -933,7 +936,7 @@ class HarnessV2Engine:
                     {
                         **payload,
                         "task_frame_id": row.task_id,
-                        "harness_run_id": run.id,
+                        "harness_run_id": run_id,
                         "agent_loop_id": agent_loop.id,
                         "execution_engine": "harness_v2",
                     },
@@ -984,18 +987,39 @@ class HarnessV2Engine:
                 bridge = StaffDeckPilotDeckModuleBridge(
                     model_client=LLMClient(model_config),
                     capability_invoker=invoker,
+                    remaining_actions=remaining_actions,
                     checkpoint_sink=lambda payload: _save_sidecar_checkpoint(
                         self.store,
                         agent_loop,
                         payload,
-                        run.id,
+                        run_id,
                     ),
                 )
                 try:
+                    _, conversation_context = isolated_attachment_context(
+                        attachment_descriptors,
+                        image_payloads,
+                    )
+                    prior_messages = loop_checkpoint.get("agentLoopMessages")
+                    if isinstance(prior_messages, list):
+                        context_messages = list(prior_messages)
+                        if conversation_context and isinstance(conversation_context.get("messages"), list):
+                            context_messages.extend(conversation_context["messages"])
+                        conversation_context = {"messages": context_messages}
                     result = client.execute(
                         requirement,
                         identity=identity,
                         checkpoint=loop_checkpoint,
+                        execution_context=PilotDeckExecutionContext(
+                            remaining_actions=remaining_actions,
+                            conversation_context=conversation_context,
+                            permission_context={
+                                "mode": "default",
+                                "canPrompt": False,
+                                "bypassAvailable": False,
+                                "source": "staffdeck",
+                            },
+                        ),
                         bridge=bridge,
                         trace_sink=trace,
                         is_cancelled=lambda: self._is_cancelled(request, session),
@@ -1044,7 +1068,10 @@ class HarnessV2Engine:
                         },
                     )
                     result = deferred_result
-            loop_checkpoint = dict(result.loop_checkpoint or {})
+            loop_checkpoint = {
+                **loop_checkpoint,
+                **dict(result.loop_checkpoint or {}),
+            }
             _merge_discovered_artifacts(result, invoker.discover_artifacts())
             loop_checkpoint["artifacts"] = list(result.artifacts)
             self.store.save_agent_loop_checkpoint(

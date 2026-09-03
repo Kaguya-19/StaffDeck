@@ -8,7 +8,7 @@ import subprocess
 import time
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from typing import Any
 
 from app.core.task_request_compiler import TaskExecutionResult, TaskRequirement
@@ -21,6 +21,15 @@ class PilotDeckAgentLoopError(RuntimeError):
         super().__init__(message)
         self.code = code
         self.result_unknown = result_unknown
+
+
+class StaffDeckModuleError(RuntimeError):
+    """Structured module failure returned by a StaffDeck-owned bridge."""
+
+    def __init__(self, code: str, message: str, *, retryability: str | None = None) -> None:
+        super().__init__(message)
+        self.code = code
+        self.retryability = retryability
 
 
 ModuleBridge = Callable[[str, dict[str, Any]], Mapping[str, Any]]
@@ -36,6 +45,30 @@ class PilotDeckExecutionIdentity:
     operation_id: str
     idempotency_key: str
     step_id: str | None = None
+
+
+@dataclass(frozen=True)
+class PilotDeckExecutionContext:
+    """Ephemeral host-owned context projected into one sidecar execution."""
+
+    remaining_actions: int | None = None
+    conversation_context: dict[str, Any] | None = None
+    permission_context: dict[str, Any] | None = None
+
+    def as_payload(self) -> dict[str, Any]:
+        payload: dict[str, Any] = {}
+        if self.conversation_context is not None:
+            messages = self.conversation_context.get("messages")
+            if isinstance(messages, list):
+                payload["messages"] = list(messages)
+        if self.permission_context is not None:
+            payload["permissionContext"] = dict(self.permission_context)
+        execution_context: dict[str, Any] = {}
+        if self.remaining_actions is not None:
+            execution_context["remainingActions"] = int(self.remaining_actions)
+        if execution_context:
+            payload["executionContext"] = execution_context
+        return payload
 
 
 class PilotDeckAgentLoopClient:
@@ -81,16 +114,39 @@ class PilotDeckAgentLoopClient:
         *,
         identity: PilotDeckExecutionIdentity,
         checkpoint: dict[str, Any] | None = None,
+        execution_context: PilotDeckExecutionContext | None = None,
         bridge: ModuleBridge | None = None,
         trace_sink: TraceSink | None = None,
         is_cancelled: Callable[[], bool] | None = None,
         deadline_monotonic: float | None = None,
     ) -> TaskExecutionResult:
         self._ensure_process()
-        process = self._require_process()
+        self._require_process()
         request_id = self._next_id("execute")
         message_id = self._next_id("message")
         operation_deadline = _deadline_iso(deadline_monotonic, self.timeout_seconds)
+        request_payload = {
+            "task": {
+                "prompt": json.dumps(requirement.model_dump(mode="json"), ensure_ascii=False),
+            },
+            "tools": [
+                {
+                    **item.model_dump(mode="json"),
+                    "readOnly": bool(
+                        item.metadata.get("readOnly", item.metadata.get("read_only", False))
+                    ),
+                    "concurrencySafe": bool(
+                        item.metadata.get("concurrencySafe", item.metadata.get("concurrency_safe", False))
+                    ),
+                }
+                for item in requirement.capability_manifest.available
+                if item.available
+            ],
+            **(execution_context.as_payload() if execution_context is not None else {}),
+        }
+        seed_state = _agent_loop_seed_state(checkpoint)
+        if seed_state is not None:
+            request_payload["seedState"] = seed_state
         request = {
             "kind": "request",
             "messageId": message_id,
@@ -102,18 +158,15 @@ class PilotDeckAgentLoopClient:
             "turnId": identity.turn_id,
             "idempotencyKey": identity.idempotency_key,
             "operationDeadline": operation_deadline,
-            "payload": {
-                "tenantId": identity.tenant_id,
-                "stepId": identity.step_id,
-                "taskRequirement": requirement.model_dump(mode="json"),
-                "checkpoint": dict(checkpoint or {}),
-            },
+            "payload": request_payload,
         }
         self._write(request)
         stream_id: str | None = None
         expected_sequence = 0
         started = time.monotonic()
         cancel_sent = False
+        cancel_observed_at: float | None = None
+        read_poll_seconds = 0.25
         while True:
             remaining = self._remaining_timeout(started, deadline_monotonic)
             if remaining <= 0:
@@ -126,7 +179,19 @@ class PilotDeckAgentLoopClient:
             if is_cancelled and is_cancelled() and not cancel_sent:
                 self._send_cancel(identity, request_id, "staffdeck_cancelled")
                 cancel_sent = True
-            message = self._read(remaining)
+                cancel_observed_at = time.monotonic()
+            if cancel_observed_at is not None and time.monotonic() - cancel_observed_at > 2.0:
+                raise PilotDeckAgentLoopError(
+                    "CANCELLED_UNCONFIRMED",
+                    "PilotDeck AgentLoop did not confirm cancellation before the grace period expired.",
+                    result_unknown=True,
+                )
+            try:
+                message = self._read(min(remaining, read_poll_seconds))
+            except PilotDeckAgentLoopError as exc:
+                if exc.code == "SIDECAR_TIMEOUT":
+                    continue
+                raise
             if message.get("kind") == "request" and message.get("method") == "module_call":
                 response = self._dispatch_module_call(message, bridge)
                 self._write(response)
@@ -138,14 +203,28 @@ class PilotDeckAgentLoopClient:
                     result_unknown=message.get("retryability") == "retry_after_status",
                 )
             if message.get("kind") == "response":
+                if message.get("inReplyTo") != message_id:
+                    continue
+                if message.get("requestId") != request_id:
+                    raise PilotDeckAgentLoopError("REQUEST_MISMATCH", "PilotDeck execute response request identity changed.")
+                if message.get("ok") is not True:
+                    raise PilotDeckAgentLoopError(
+                        str(message.get("code") or "EXECUTE_REJECTED"),
+                        str(message.get("error", {}).get("message") if isinstance(message.get("error"), dict) else "PilotDeck execute request was rejected."),
+                        result_unknown=message.get("outcome") == "result_unknown",
+                    )
+                if message.get("final") is True:
+                    raise PilotDeckAgentLoopError("UNEXPECTED_EXECUTE_RESPONSE", "PilotDeck execute terminal result must be an event.")
                 if message.get("streamId"):
                     stream_id = str(message["streamId"])
-                if message.get("final") is True:
-                    return self._result_from_payload(message.get("payload"), message, requirement)
                 continue
             if message.get("kind") != "event":
                 continue
-            if message.get("runId") != identity.run_id or message.get("operationId") != identity.operation_id:
+            if (
+                message.get("runId") != identity.run_id
+                or message.get("operationId") != identity.operation_id
+                or message.get("requestId") != request_id
+            ):
                 continue
             if stream_id is None:
                 stream_id = str(message.get("streamId") or "")
@@ -166,7 +245,32 @@ class PilotDeckAgentLoopClient:
                     raise PilotDeckAgentLoopError("CANCELLED", "PilotDeck AgentLoop was cancelled.")
                 if outcome == "result_unknown":
                     raise PilotDeckAgentLoopError("RESULT_UNKNOWN", "PilotDeck result requires reconciliation.", result_unknown=True)
-                return self._result_from_payload(payload, message, requirement)
+                if cancel_sent:
+                    raise PilotDeckAgentLoopError(
+                        "CANCELLED_AFTER_REQUEST",
+                        "PilotDeck completed after StaffDeck cancellation was observed.",
+                        result_unknown=True,
+                    )
+                if outcome != "completed":
+                    if str(message.get("code") or "") == "ACTION_BUDGET_EXHAUSTED":
+                        return self._finalize_result(
+                            TaskExecutionResult(
+                                task_frame_id=requirement.task_frame_id,
+                                status="action_budget",
+                                reply_fragment="当前任务已达到本轮自动执行上限，需要下一轮继续。",
+                                action_count=0,
+                                error={"code": "ACTION_BUDGET_EXHAUSTED", "message": "StaffDeck action budget exhausted."},
+                            ),
+                            payload if isinstance(payload, dict) else {},
+                            checkpoint,
+                        )
+                    error = message.get("error")
+                    detail = error.get("message") if isinstance(error, dict) else None
+                    raise PilotDeckAgentLoopError(
+                        str(message.get("code") or "EXECUTE_FAILED"),
+                        str(detail or "PilotDeck AgentLoop execution failed."),
+                    )
+                return self._result_from_payload(payload, message, requirement, checkpoint)
 
     def _dispatch_module_call(
         self,
@@ -191,6 +295,19 @@ class PilotDeckAgentLoopClient:
                 "outcome": "completed",
                 "payload": result,
             }
+        except StaffDeckModuleError as exc:
+            return {
+                "kind": "response",
+                "messageId": self._next_id("module-error"),
+                "inReplyTo": str(request.get("messageId") or ""),
+                "requestId": str(request.get("requestId") or ""),
+                "ok": False,
+                "final": True,
+                "outcome": "failed",
+                "code": exc.code,
+                "retryability": exc.retryability,
+                "error": {"code": exc.code, "message": str(exc)},
+            }
         except PilotDeckAgentLoopError as exc:
             return {
                 "kind": "response",
@@ -212,8 +329,8 @@ class PilotDeckAgentLoopClient:
                 "ok": False,
                 "final": True,
                 "outcome": "failed",
-                "code": "STAFFDECK_MODULE_ERROR",
-                "error": {"message": str(exc)},
+                "code": str(getattr(exc, "code", "STAFFDECK_MODULE_ERROR")),
+                "error": {"code": str(getattr(exc, "code", "STAFFDECK_MODULE_ERROR")), "message": str(exc)},
             }
 
     def _send_cancel(self, identity: PilotDeckExecutionIdentity, request_id: str, reason: str) -> None:
@@ -309,37 +426,55 @@ class PilotDeckAgentLoopClient:
         payload: Any,
         message: Mapping[str, Any],
         requirement: TaskRequirement,
+        checkpoint: dict[str, Any] | None,
     ) -> TaskExecutionResult:
-        if isinstance(payload, dict) and isinstance(payload.get("result"), dict):
-            payload = payload["result"]
-        if isinstance(payload, dict):
+        outcome = str(message.get("outcome") or "failed")
+        if outcome != "completed":
+            raise PilotDeckAgentLoopError(
+                str(message.get("code") or "EXECUTE_FAILED"),
+                "PilotDeck returned a non-completed result payload.",
+            )
+        raw_payload = payload if isinstance(payload, dict) else {}
+        raw_result = raw_payload.get("result") if isinstance(raw_payload.get("result"), dict) else raw_payload
+        if isinstance(raw_result, dict):
             try:
-                return TaskExecutionResult.model_validate(payload)
-            except Exception:
-                error = payload.get("error")
-                text = _final_message_text(payload)
+                return self._finalize_result(TaskExecutionResult.model_validate(raw_result), raw_payload, checkpoint)
+            except (TypeError, ValueError):
+                text = _final_message_text(raw_payload) or _final_message_text(raw_result)
                 parsed = _parse_task_result_text(text, requirement.task_frame_id)
                 if parsed is not None:
-                    return parsed
-                outcome = str(message.get("outcome") or "failed")
-                return TaskExecutionResult(
-                    task_frame_id=requirement.task_frame_id,
-                    status="completed" if outcome == "completed" else "failed",
-                    reply_fragment=text,
-                    error=(
-                        {"code": "PILOTDECK_EXECUTION_FAILED", "message": str(error)}
-                        if outcome != "completed" and error
-                        else None
-                    ),
-                )
-        else:
-            error = None
-        outcome = str(message.get("outcome") or "failed")
-        return TaskExecutionResult(
-            task_frame_id="",
-            status="failed" if outcome != "completed" else "action_budget",
-            error=error if isinstance(error, dict) else {"code": "INVALID_RESULT", "message": "PilotDeck returned an invalid TaskExecutionResult."},
+                    return self._finalize_result(parsed, raw_payload, checkpoint)
+                agent_result = raw_result
+                if agent_result.get("type") == "success":
+                    result = TaskExecutionResult(
+                        task_frame_id=requirement.task_frame_id,
+                        status="completed",
+                        reply_fragment=text,
+                        action_count=max(1, int(agent_result.get("turns") or 1)),
+                        structured_result=agent_result.get("structuredOutput"),
+                    )
+                    return self._finalize_result(result, raw_payload, checkpoint)
+        raise PilotDeckAgentLoopError(
+            "INVALID_RESULT",
+            "PilotDeck returned an invalid TaskExecutionResult.",
         )
+
+    def _finalize_result(
+        self,
+        result: TaskExecutionResult,
+        payload: Mapping[str, Any],
+        checkpoint: dict[str, Any] | None,
+    ) -> TaskExecutionResult:
+        """Keep StaffDeck-owned checkpoint fields while adding a safe generic snapshot."""
+        merged = dict(checkpoint or {})
+        messages = payload.get("messages")
+        if isinstance(messages, list):
+            merged["agentLoopMessages"] = _checkpoint_messages(messages)
+        seed_state = _agent_loop_seed_state(checkpoint)
+        if seed_state is not None:
+            merged["agentLoopSeedState"] = seed_state
+        result.loop_checkpoint = merged
+        return result
 
     def _remaining_timeout(self, started: float, deadline_monotonic: float | None) -> float:
         remaining = self.timeout_seconds - (time.monotonic() - started)
@@ -370,6 +505,38 @@ def _final_message_text(payload: Mapping[str, Any]) -> str:
     return "".join(parts)
 
 
+def _agent_loop_seed_state(checkpoint: dict[str, Any] | None) -> dict[str, Any] | None:
+    """Project only the generic PilotDeck seed state from host checkpoint data."""
+
+    if not isinstance(checkpoint, dict):
+        return None
+    seed_state = checkpoint.get("agentLoopSeedState")
+    return dict(seed_state) if isinstance(seed_state, dict) else None
+
+
+def _checkpoint_messages(messages: list[Any]) -> list[dict[str, Any]]:
+    """Persist canonical messages without transient image data URLs."""
+    sanitized: list[dict[str, Any]] = []
+    for raw in messages:
+        if not isinstance(raw, dict):
+            continue
+        item = dict(raw)
+        content = item.get("content")
+        if isinstance(content, list):
+            safe_content: list[Any] = []
+            for block in content:
+                if isinstance(block, dict) and block.get("type") == "image":
+                    safe_content.append({
+                        "type": "text",
+                        "text": "[image omitted from checkpoint; reattached for the next execution]",
+                    })
+                else:
+                    safe_content.append(block)
+            item["content"] = safe_content
+        sanitized.append(item)
+    return sanitized
+
+
 def _parse_task_result_text(text: str, task_frame_id: str) -> TaskExecutionResult | None:
     if not text.strip():
         return None
@@ -396,12 +563,14 @@ def _parse_task_result_text(text: str, task_frame_id: str) -> TaskExecutionResul
 
 def _deadline_iso(deadline_monotonic: float | None, timeout_seconds: float) -> str:
     seconds = timeout_seconds if deadline_monotonic is None else max(0.0, deadline_monotonic - time.monotonic())
-    return (datetime.now(timezone.utc) + timedelta(seconds=seconds)).isoformat().replace("+00:00", "Z")
+    return (datetime.now(UTC) + timedelta(seconds=seconds)).isoformat().replace("+00:00", "Z")
 
 
 __all__ = [
     "ModuleBridge",
     "PilotDeckAgentLoopClient",
     "PilotDeckAgentLoopError",
+    "StaffDeckModuleError",
+    "PilotDeckExecutionContext",
     "PilotDeckExecutionIdentity",
 ]
