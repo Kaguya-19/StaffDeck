@@ -13,6 +13,9 @@ from typing import Any
 
 from app.core.task_request_compiler import TaskExecutionResult, TaskRequirement
 
+STAFFDECK_RESULT_CARRIER_PREFIX = "__STAFFDECK_TASK_RESULT__="
+STAFFDECK_RESULT_CARRIER_SUFFIX = "__END__"
+
 
 class PilotDeckAgentLoopError(RuntimeError):
     """Failure crossing the PilotDeck module boundary."""
@@ -54,20 +57,30 @@ class PilotDeckExecutionContext:
     remaining_actions: int | None = None
     conversation_context: dict[str, Any] | None = None
     permission_context: dict[str, Any] | None = None
+    metadata: dict[str, Any] | None = None
+    context_override: dict[str, Any] | None = None
 
     def as_payload(self) -> dict[str, Any]:
         payload: dict[str, Any] = {}
+        override = dict(self.context_override or {})
         if self.conversation_context is not None:
             messages = self.conversation_context.get("messages")
             if isinstance(messages, list):
-                payload["messages"] = list(messages)
+                if self.context_override is None:
+                    payload["messages"] = list(messages)
+                elif "messages" not in override:
+                    override["messages"] = list(messages)
         if self.permission_context is not None:
             payload["permissionContext"] = dict(self.permission_context)
         execution_context: dict[str, Any] = {}
         if self.remaining_actions is not None:
             execution_context["remainingActions"] = int(self.remaining_actions)
+        if self.metadata:
+            execution_context.update(self.metadata)
         if execution_context:
             payload["executionContext"] = execution_context
+        if override:
+            payload["contextOverride"] = override
         return payload
 
 
@@ -115,6 +128,7 @@ class PilotDeckAgentLoopClient:
         identity: PilotDeckExecutionIdentity,
         checkpoint: dict[str, Any] | None = None,
         execution_context: PilotDeckExecutionContext | None = None,
+        context_override: dict[str, Any] | None = None,
         bridge: ModuleBridge | None = None,
         trace_sink: TraceSink | None = None,
         is_cancelled: Callable[[], bool] | None = None,
@@ -135,15 +149,24 @@ class PilotDeckAgentLoopClient:
                     "readOnly": bool(
                         item.metadata.get("readOnly", item.metadata.get("read_only", False))
                     ),
-                    "concurrencySafe": bool(
-                        item.metadata.get("concurrencySafe", item.metadata.get("concurrency_safe", False))
-                    ),
+                    # HarnessTaskAgent executes one capability action at a time;
+                    # keep the StaffDeck projection serial even when a manifest
+                    # advertises a generally concurrency-safe tool.
+                    "concurrencySafe": False,
                 }
                 for item in requirement.capability_manifest.available
                 if item.available
             ],
             **(execution_context.as_payload() if execution_context is not None else {}),
         }
+        if context_override:
+            existing_override = request_payload.get("contextOverride")
+            request_payload["contextOverride"] = {
+                **(existing_override if isinstance(existing_override, dict) else {}),
+                **context_override,
+            }
+            if "tools" not in request_payload["contextOverride"]:
+                request_payload["contextOverride"]["tools"] = list(request_payload["tools"])
         seed_state = _agent_loop_seed_state(checkpoint)
         if seed_state is not None:
             request_payload["seedState"] = seed_state
@@ -320,7 +343,7 @@ class PilotDeckAgentLoopClient:
                 "code": exc.code,
                 "error": {"message": str(exc)},
             }
-        except Exception as exc:
+        except Exception as exc:  # noqa: BLE001 - preserve arbitrary host module failures
             return {
                 "kind": "response",
                 "messageId": self._next_id("module-error"),
@@ -437,6 +460,12 @@ class PilotDeckAgentLoopClient:
         raw_payload = payload if isinstance(payload, dict) else {}
         raw_result = raw_payload.get("result") if isinstance(raw_payload.get("result"), dict) else raw_payload
         if isinstance(raw_result, dict):
+            carrier_text = _final_message_text(raw_payload)
+            if not carrier_text:
+                carrier_text = _last_assistant_message_text(raw_payload.get("messages"))
+            carrier_result, _ = _extract_staffdeck_result(carrier_text, requirement.task_frame_id)
+            if carrier_result is not None:
+                return self._finalize_result(carrier_result, raw_payload, checkpoint)
             try:
                 return self._finalize_result(TaskExecutionResult.model_validate(raw_result), raw_payload, checkpoint)
             except (TypeError, ValueError):
@@ -505,6 +534,79 @@ def _final_message_text(payload: Mapping[str, Any]) -> str:
     return "".join(parts)
 
 
+def _last_assistant_message_text(messages: Any) -> str:
+    if not isinstance(messages, list):
+        return ""
+    for raw in reversed(messages):
+        if not isinstance(raw, Mapping) or raw.get("role") != "assistant":
+            continue
+        content = raw.get("content")
+        if isinstance(content, str):
+            return content
+        if not isinstance(content, list):
+            continue
+        return "".join(
+            str(item.get("text") or "")
+            for item in content
+            if isinstance(item, Mapping) and item.get("type") == "text"
+        )
+    return ""
+
+
+def _extract_staffdeck_result(
+    text: str,
+    task_frame_id: str,
+) -> tuple[TaskExecutionResult | None, str]:
+    """Decode the StaffDeck-only opaque carrier from an assistant text result."""
+
+    start = text.find(STAFFDECK_RESULT_CARRIER_PREFIX)
+    if start < 0:
+        return None, text
+    payload_start = start + len(STAFFDECK_RESULT_CARRIER_PREFIX)
+    end = text.find(STAFFDECK_RESULT_CARRIER_SUFFIX, payload_start)
+    if end < 0:
+        return None, text
+    encoded = text[payload_start:end]
+    try:
+        value = json.loads(encoded)
+    except (TypeError, json.JSONDecodeError):
+        return None, text
+    if not isinstance(value, dict):
+        return None, text
+    candidate = dict(value)
+    candidate.setdefault("task_frame_id", task_frame_id)
+    if not candidate.get("reply_fragment") and isinstance(candidate.get("reply"), str):
+        candidate["reply_fragment"] = candidate["reply"]
+    if candidate.get("status") not in {
+        "completed",
+        "awaiting_user",
+        "handoff",
+        "failed",
+        "blocked",
+        "action_budget",
+    }:
+        if candidate.get("handoff") is True or candidate.get("action") == "handoff":
+            candidate["status"] = "handoff"
+        elif candidate.get("action") == "finish":
+            candidate["status"] = "completed"
+        else:
+            return None, text
+    if candidate.get("error") is not None and not isinstance(candidate.get("error"), dict):
+        candidate["error"] = {"message": str(candidate["error"])}
+    if candidate.get("retryability") is not None:
+        error = dict(candidate.get("error") or {})
+        error.setdefault("retryability", candidate["retryability"])
+        candidate["error"] = error
+    try:
+        result = TaskExecutionResult.model_validate(candidate)
+    except (TypeError, ValueError):
+        return None, text
+    cleaned = (text[:start] + text[end + len(STAFFDECK_RESULT_CARRIER_SUFFIX):]).strip()
+    if not result.reply_fragment and cleaned:
+        result.reply_fragment = cleaned
+    return result, cleaned
+
+
 def _agent_loop_seed_state(checkpoint: dict[str, Any] | None) -> dict[str, Any] | None:
     """Project only the generic PilotDeck seed state from host checkpoint data."""
 
@@ -531,7 +633,12 @@ def _checkpoint_messages(messages: list[Any]) -> list[dict[str, Any]]:
                         "text": "[image omitted from checkpoint; reattached for the next execution]",
                     })
                 else:
-                    safe_content.append(block)
+                    if isinstance(block, dict) and block.get("type") == "text":
+                        text = str(block.get("text") or "")
+                        _, cleaned = _extract_staffdeck_result(text, "")
+                        safe_content.append({**block, "text": cleaned})
+                    else:
+                        safe_content.append(block)
             item["content"] = safe_content
         sanitized.append(item)
     return sanitized
@@ -558,7 +665,7 @@ def _parse_task_result_text(text: str, task_frame_id: str) -> TaskExecutionResul
         return None
     try:
         return TaskExecutionResult.model_validate(value)
-    except Exception:
+    except (TypeError, ValueError):
         return None
 
 def _deadline_iso(deadline_monotonic: float | None, timeout_seconds: float) -> str:
@@ -570,7 +677,7 @@ __all__ = [
     "ModuleBridge",
     "PilotDeckAgentLoopClient",
     "PilotDeckAgentLoopError",
-    "StaffDeckModuleError",
     "PilotDeckExecutionContext",
     "PilotDeckExecutionIdentity",
+    "StaffDeckModuleError",
 ]

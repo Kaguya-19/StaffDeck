@@ -19,6 +19,12 @@ class FakeModel:
         raise AssertionError("text fallback must not be called")
 
 
+class SequenceModel(FakeModel):
+    def generate_json_sequence(self, system_prompt, user_payload):
+        self.requests.append((system_prompt, user_payload))
+        return self.response
+
+
 class FakeInvoker:
     def __init__(self, result):
         self.result = result
@@ -59,6 +65,29 @@ def test_model_preserves_multimodal_messages_without_text_fallback() -> None:
 
     assert {"type": "text_delta", "text": "看到了图片。"} in result["events"]
     assert model.requests[0][1]["conversation_context"]["messages"][0]["images"][0]["image_url"]["url"].startswith("data:image/png")
+    assert model.requests[0][1]["canonical_messages"][0]["role"] == "user"
+
+
+def test_model_merges_execution_metadata_with_explicit_request_metadata() -> None:
+    model = FakeModel({"reply_fragment": "ok"})
+    bridge = StaffDeckPilotDeckModuleBridge(
+        model_client=model,
+        capability_invoker=FakeInvoker({"success": True}),
+    )
+
+    bridge.model({
+        "context": {"metadata": {"iteration": 3, "shared": "execution"}},
+        "request": {
+            "systemPrompt": "system",
+            "messages": [{"role": "user", "content": [{"type": "text", "text": "q"}]}],
+            "metadata": {"shared": "request"},
+        },
+    })
+
+    assert model.requests[0][1]["metadata"] == {
+        "iteration": 3,
+        "shared": "request",
+    }
 
 
 def test_model_error_is_not_downgraded_to_text_generation() -> None:
@@ -105,7 +134,7 @@ def test_capability_error_result_keeps_host_error_shape() -> None:
     assert result["toolCallId"] == "call-1"
 
 
-def test_model_budget_gate_rejects_before_extra_model_action() -> None:
+def test_action_budget_is_consumed_by_capability_actions() -> None:
     model = FakeModel({"reply_fragment": "ok"})
     bridge = StaffDeckPilotDeckModuleBridge(
         model_client=model,
@@ -113,6 +142,150 @@ def test_model_budget_gate_rejects_before_extra_model_action() -> None:
         remaining_actions=1,
     )
     bridge.model({"systemPrompt": "system", "userPayload": "first"})
+    bridge.capability({"name": "lookup", "toolCallId": "call-1", "arguments": {}})
     with pytest.raises(StaffDeckModuleError, match="action budget exhausted"):
         bridge.model({"systemPrompt": "system", "userPayload": "second"})
     assert len(model.requests) == 1
+
+
+def test_model_projects_tool_history_with_name_and_json_result() -> None:
+    model = FakeModel({"reply_fragment": "继续处理"})
+    bridge = StaffDeckPilotDeckModuleBridge(
+        model_client=model,
+        capability_invoker=FakeInvoker({"success": True}),
+    )
+
+    bridge.model(
+        {
+            "request": {
+                "systemPrompt": "system",
+                "messages": [
+                    {
+                        "role": "assistant",
+                        "content": [
+                            {
+                                "type": "tool_call",
+                                "id": "call-1",
+                                "name": "lookup",
+                                "input": {"q": "status"},
+                            }
+                        ],
+                    },
+                    {
+                        "role": "user",
+                        "content": [
+                            {
+                                "type": "tool_result",
+                                "toolCallId": "call-1",
+                                "content": [{"type": "text", "text": '{"ok":true}'}],
+                            }
+                        ],
+                    },
+                ],
+            }
+        }
+    )
+
+    transcript = model.requests[0][1]["harness_transcript"]
+    assert transcript[0]["tool_name"] == "lookup"
+    assert transcript[1]["tool_name"] == "lookup"
+    assert transcript[1]["result"]["data"] == {"ok": True}
+
+
+def test_model_preserves_raw_tool_error_code_and_empty_data() -> None:
+    model = FakeModel({"reply_fragment": "继续处理"})
+    bridge = StaffDeckPilotDeckModuleBridge(
+        model_client=model,
+        capability_invoker=FakeInvoker({"success": True}),
+    )
+
+    bridge.model({
+        "request": {
+            "systemPrompt": "system",
+            "messages": [{
+                "role": "user",
+                "content": [{
+                    "type": "tool_result",
+                    "toolCallId": "call-1",
+                    "isError": True,
+                    "content": [{"type": "text", "text": "failed"}],
+                    "raw": {
+                        "type": "error",
+                        "toolName": "lookup",
+                        "error": {
+                            "code": "MOCK_TOOL_ERROR",
+                            "message": "failed",
+                            "retryable": False,
+                        },
+                    },
+                }],
+            }],
+        },
+    })
+
+    result = model.requests[0][1]["harness_transcript"][0]["result"]
+    assert result["data"] is None
+    assert result["error"]["code"] == "MOCK_TOOL_ERROR"
+
+
+def test_model_emits_all_sequence_tool_calls_in_order() -> None:
+    model = SequenceModel(
+        [
+            {"action": "tool", "tool_name": "lookup", "arguments": {"q": "a"}},
+            {"action": "tool", "tool_name": "summarize", "arguments": {"q": "b"}},
+        ]
+    )
+    bridge = StaffDeckPilotDeckModuleBridge(
+        model_client=model,
+        capability_invoker=FakeInvoker({"success": True}),
+    )
+
+    events = bridge.model({"systemPrompt": "system", "userPayload": "payload"})["events"]
+    calls = [event["toolCall"]["name"] for event in events if event["type"] == "tool_call_end"]
+    assert calls == ["lookup", "summarize"]
+
+
+@pytest.mark.parametrize(
+    ("status", "extra"),
+    [
+        ("handoff", {"handoff": True}),
+        ("awaiting_user", {"slot_updates": {"date": ""}}),
+        ("blocked", {"next_step_id": None}),
+    ],
+)
+def test_model_preserves_structured_terminal_action(status: str, extra: dict[str, object]) -> None:
+    model = FakeModel({
+        "action": "finish",
+        "status": status,
+        "reply_fragment": "请继续",
+        "task_summary": "structured terminal",
+        **extra,
+    })
+    bridge = StaffDeckPilotDeckModuleBridge(
+        model_client=model,
+        capability_invoker=FakeInvoker({"success": True}),
+    )
+
+    events = bridge.model({"systemPrompt": "system", "userPayload": "payload"})["events"]
+    text = "".join(event["text"] for event in events if event["type"] == "text_delta")
+    assert "__STAFFDECK_TASK_RESULT__=" in text
+    assert f'"status":"{status}"' in text
+    assert "请继续" in text
+
+
+def test_model_unwraps_json_action_returned_as_provider_message_text() -> None:
+    model = FakeModel({
+        "action": "finish",
+        "status": "completed",
+        "reply_fragment": '{"action":"finish","status":"handoff","reply_fragment":"转人工","handoff":true}',
+    })
+    bridge = StaffDeckPilotDeckModuleBridge(
+        model_client=model,
+        capability_invoker=FakeInvoker({"success": True}),
+    )
+
+    events = bridge.model({"systemPrompt": "system", "userPayload": "payload"})["events"]
+    text = "".join(event["text"] for event in events if event["type"] == "text_delta")
+    assert '"status":"handoff"' in text
+    assert '"handoff":true' in text
+    assert '"status":"completed"' not in text

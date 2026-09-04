@@ -18,18 +18,21 @@ reconcile it; it is never blindly replayed.
 ## StaffDeck to generic sidecar mapping
 
 The StaffDeck adapter projects its host-owned request into the generic sidecar
-payload: the serialized TaskRequirement becomes `task.prompt`, the current
-validated messages become `messages`, the frozen capability manifest becomes
-`tools`, and permission data becomes `permissionContext`. The sidecar does not
-need to know any StaffDeck type or field name.
+payload. For parity-sensitive executions it uses `contextOverride`:
+`systemPrompt` is the host-selected prompt, `messages` is the ordered canonical
+history, and `metadata` carries opaque execution observations. The serialized
+TaskRequirement remains a compatibility `task.prompt` fallback; the sidecar does
+not need to know any StaffDeck type or field name. `contextOverride` wins over
+the ordinary `agent`, `messages`, and `tools` fields, and an explicitly supplied
+message list suppresses task-prompt fallback.
 
 TaskFrame attachment descriptors remain metadata-only. Validated image data is
-projected only into the in-memory `messages[*].images` field for the current
-execute request; it is never written to the requirement, checkpoint, trace, or
-invocation record. The host's current action budget is carried under
-`executionContext.remainingActions` as an observation; exact action-budget
-enforcement remains owned by StaffDeck until a generic AgentLoop contract is
-introduced.
+projected only into transient canonical image blocks in
+`contextOverride.messages` for the current execute request; it is never written
+to the requirement, checkpoint, trace, or invocation record. The host's current
+action budget is carried under `executionContext.remainingActions` and mirrored
+in generic metadata as an observation; exact action-budget enforcement remains
+owned by StaffDeck until a generic AgentLoop contract is introduced.
 
 Only a checkpoint field explicitly named `agentLoopSeedState` is projected to
 the generic `seedState` field. Other Harness checkpoint data remains

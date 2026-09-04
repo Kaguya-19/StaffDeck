@@ -252,3 +252,86 @@ for line in sys.stdin:
     )
     client.close()
     assert result.reply_fragment == "generic-ok"
+
+
+def test_client_projects_host_context_override_without_persisting_image_data() -> None:
+    script = r'''
+import json, sys
+for line in sys.stdin:
+    msg = json.loads(line)
+    if msg.get("method") == "hello":
+        print(json.dumps({"kind":"response","messageId":"hello-res","inReplyTo":msg["messageId"],"ok":True,"connectionGeneration":"test-connection"}), flush=True)
+    elif msg.get("method") == "execute":
+        payload = msg["payload"]
+        override = payload.get("contextOverride", {})
+        messages = override.get("messages", [])
+        ok = (
+            override.get("systemPrompt") == "host-system"
+            and len(messages) == 3
+            and messages[1]["content"][0]["type"] == "tool_call"
+            and messages[2]["content"][0]["type"] == "tool_result"
+            and messages[2]["content"][0]["isError"] is True
+            and override["metadata"]["iteration"] == 2
+            and ";base64," not in json.dumps(payload.get("seedState", {}))
+        )
+        result = {"task_frame_id":"frame-1","status":"completed","reply_fragment":"override-ok" if ok else "override-missing","action_count":1}
+        print(json.dumps({"kind":"response","messageId":"accepted","inReplyTo":msg["messageId"],"requestId":msg["requestId"],"ok":True,"streamId":"stream-1","cursor":0}), flush=True)
+        print(json.dumps({"kind":"event","messageId":"final-1","eventType":"agent.execute.completed","streamId":"stream-1","sequence":0,"runId":msg["runId"],"operationId":msg["operationId"],"requestId":msg["requestId"],"final":True,"outcome":"completed","payload":{"result":result}}), flush=True)
+'''
+    checkpoint = {
+        "agentLoopSeedState": {"allowedReadFiles": ["/workspace/input.txt"]},
+    }
+    client = PilotDeckAgentLoopClient([sys.executable, "-u", "-c", script])
+    result = client.execute(
+        _requirement(),
+        identity=_identity(),
+        checkpoint=checkpoint,
+        execution_context=PilotDeckExecutionContext(
+            context_override={
+                "systemPrompt": "host-system",
+                "messages": [
+                    {"role": "user", "content": [{"type": "text", "text": "task"}]},
+                    {"role": "assistant", "content": [{"type": "tool_call", "id": "call-1", "name": "lookup", "input": {}}]},
+                    {"role": "assistant", "content": [{"type": "tool_result", "toolCallId": "call-1", "content": [{"type": "text", "text": "denied"}], "isError": True}]},
+                ],
+                "metadata": {"iteration": 2},
+            },
+        ),
+    )
+    client.close()
+    assert result.reply_fragment == "override-ok"
+
+
+@pytest.mark.parametrize(
+    ("status", "extra"),
+    [
+        ("handoff", {"handoff": True}),
+        ("awaiting_user", {"slot_updates": {"date": ""}}),
+        ("blocked", {"next_step_id": None}),
+    ],
+)
+def test_client_decodes_staffdeck_structured_terminal_carrier(status: str, extra: dict[str, object]) -> None:
+    carrier = {
+        "action": "finish",
+        "status": status,
+        "reply_fragment": "请继续",
+        "task_summary": "structured terminal",
+        **extra,
+    }
+    carrier_text = (
+        "请继续"
+        "__STAFFDECK_TASK_RESULT__="
+        + json.dumps(carrier, ensure_ascii=False, separators=(",", ":"))
+        + "__END__"
+    )
+    payload = {
+        "messages": [{"role": "assistant", "content": [{"type": "text", "text": carrier_text}]}],
+    }
+    client = PilotDeckAgentLoopClient([sys.executable, "-u", "-c", _client_script(json.dumps(payload))])
+    result = client.execute(_requirement(), identity=_identity(), checkpoint={})
+    client.close()
+    assert result.status == status
+    assert result.reply_fragment == "请继续"
+    assert "__STAFFDECK_TASK_RESULT__=" not in result.reply_fragment
+    checkpoint_messages = result.loop_checkpoint["agentLoopMessages"]
+    assert "__STAFFDECK_TASK_RESULT__=" not in checkpoint_messages[0]["content"][0]["text"]

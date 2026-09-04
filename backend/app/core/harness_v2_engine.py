@@ -14,9 +14,11 @@ from app.core.cancellation import is_chat_turn_cancelled
 from app.core.capability_discovery import project_capability_manifest
 from app.core.capability_manifest import CapabilityManifestBuilder
 from app.core.harness_agent import (
+    PROMPT_PATH,
     HarnessExecutionCancelled,
     HarnessExecutionFenced,
     HarnessTaskAgent,
+    _step_timeout_result,
 )
 from app.core.harness_attachments import (
     isolated_attachment_context,
@@ -157,7 +159,7 @@ def _apply_forced_sop_snapshot(
         updated_at=current.updated_at,
     )
     if hasattr(current, "agent_branch_meta"):
-        object.__setattr__(pinned, "agent_branch_meta", getattr(current, "agent_branch_meta"))
+        object.__setattr__(pinned, "agent_branch_meta", current.agent_branch_meta)
     return [pinned if skill.skill_id == target else skill for skill in source_skills]
 
 
@@ -926,9 +928,8 @@ class HarnessV2Engine:
                 )
             self.active_run_id = run.id
             self.db.commit()
-            run_id = run.id
 
-            def trace(event_type: str, payload: dict[str, Any]) -> None:
+            def trace(event_type: str, payload: dict[str, Any], run_id: str = run.id) -> None:
                 self.events.record(
                     request.tenant_id,
                     session.id,
@@ -969,6 +970,9 @@ class HarnessV2Engine:
             )
 
             if _pilotdeck_sidecar_enabled():
+                # Preserve the legacy boundary when cancellation was observed
+                # before the external AgentLoop was started.
+                self._raise_if_cancelled(request, session)
                 settings = get_settings()
                 client = PilotDeckAgentLoopClient(
                     settings.pilotdeck_agent_loop_command,
@@ -988,7 +992,7 @@ class HarnessV2Engine:
                     model_client=LLMClient(model_config),
                     capability_invoker=invoker,
                     remaining_actions=remaining_actions,
-                    checkpoint_sink=lambda payload: _save_sidecar_checkpoint(
+                    checkpoint_sink=lambda payload, run_id=run.id: _save_sidecar_checkpoint(
                         self.store,
                         agent_loop,
                         payload,
@@ -1001,11 +1005,16 @@ class HarnessV2Engine:
                         image_payloads,
                     )
                     prior_messages = loop_checkpoint.get("agentLoopMessages")
-                    if isinstance(prior_messages, list):
-                        context_messages = list(prior_messages)
-                        if conversation_context and isinstance(conversation_context.get("messages"), list):
-                            context_messages.extend(conversation_context["messages"])
-                        conversation_context = {"messages": context_messages}
+                    context_messages = _pilotdeck_context_messages(
+                        requirement,
+                        loop_checkpoint,
+                        conversation_context,
+                        prior_messages,
+                    )
+                    context_metadata = _pilotdeck_context_metadata(
+                        loop_checkpoint,
+                        remaining_actions=remaining_actions,
+                    )
                     result = client.execute(
                         requirement,
                         identity=identity,
@@ -1019,6 +1028,12 @@ class HarnessV2Engine:
                                 "bypassAvailable": False,
                                 "source": "staffdeck",
                             },
+                            metadata=context_metadata,
+                            context_override={
+                                "systemPrompt": PROMPT_PATH.read_text(encoding="utf-8").strip(),
+                                "messages": context_messages,
+                                "metadata": context_metadata,
+                            },
                         ),
                         bridge=bridge,
                         trace_sink=trace,
@@ -1028,9 +1043,21 @@ class HarnessV2Engine:
                 except PilotDeckAgentLoopError as exc:
                     if exc.code == "CANCELLED":
                         raise HarnessExecutionCancelled(str(exc)) from exc
-                    if exc.result_unknown:
+                    if exc.code == "DEADLINE_EXCEEDED" and step_timeout_seconds is not None:
+                        result = _step_timeout_result(
+                            requirement,
+                            action_count=0,
+                            timeout_seconds=step_timeout_seconds,
+                            capability_results=[],
+                            citations=[],
+                            evidence_results=[],
+                            artifacts=[],
+                            trace_sink=trace,
+                        )
+                    elif exc.result_unknown:
                         raise HarnessExecutionFenced(str(exc)) from exc
-                    raise RuntimeError(f"PilotDeck AgentLoop failed [{exc.code}]: {exc}") from exc
+                    else:
+                        raise RuntimeError(f"PilotDeck AgentLoop failed [{exc.code}]: {exc}") from exc
                 finally:
                     client.close()
             else:
@@ -1548,10 +1575,7 @@ class HarnessV2Engine:
             self.store.set_active_task_frame(
                 session,
                 (
-                    sorted(
-                        conversation_candidates,
-                        key=lambda item: item.sequence,
-                    )[0]
+                    min(conversation_candidates, key=lambda item: item.sequence)
                     if conversation_candidates
                     else None
                 ),
@@ -2154,3 +2178,129 @@ def _save_sidecar_checkpoint(
     )
     store.db.commit()
     return {"accepted": True}
+
+
+def _pilotdeck_context_messages(
+    requirement: Any,
+    checkpoint: dict[str, Any],
+    attachment_context: dict[str, Any] | None,
+    prior_messages: Any,
+) -> list[dict[str, Any]]:
+    """Project StaffDeck's durable task context into generic canonical messages."""
+
+    if isinstance(prior_messages, list) and prior_messages:
+        messages = [dict(item) for item in prior_messages if isinstance(item, dict)]
+        # A generic AgentLoop checkpoint may contain only the durable
+        # assistant/tool tail. Keep the current TaskRequirement as the stable
+        # task boundary when projecting that tail back into the next turn.
+        has_task_boundary = any(
+            requirement.task_frame_id in json.dumps(item, ensure_ascii=False)
+            for item in messages
+        )
+        if not has_task_boundary:
+            messages.insert(0, {
+                "role": "user",
+                "content": [{
+                    "type": "text",
+                    "text": json.dumps(requirement.model_dump(mode="json"), ensure_ascii=False),
+                }],
+            })
+    else:
+        messages = [{
+            "role": "user",
+            "content": [{
+                "type": "text",
+                "text": json.dumps(requirement.model_dump(mode="json"), ensure_ascii=False),
+            }],
+        }]
+        for entry in checkpoint.get("transcript", []) if isinstance(checkpoint.get("transcript"), list) else []:
+            projected = _transcript_entry_to_canonical(entry)
+            if projected is not None:
+                messages.append(projected)
+
+    if attachment_context and isinstance(attachment_context.get("messages"), list):
+        for raw in attachment_context["messages"]:
+            projected = _attachment_message_to_canonical(raw)
+            if projected is not None:
+                messages.append(projected)
+    return messages
+
+
+def _transcript_entry_to_canonical(entry: Any) -> dict[str, Any] | None:
+    if not isinstance(entry, dict):
+        return None
+    role = str(entry.get("role") or "")
+    if role == "assistant" and entry.get("action") == "tool":
+        name = str(entry.get("tool_name") or "")
+        call_id = str(entry.get("tool_call_id") or "staffdeck-call")
+        if not name:
+            return None
+        return {"role": "assistant", "content": [{
+            "type": "tool_call",
+            "id": call_id,
+            "name": name,
+            "input": entry.get("arguments") if isinstance(entry.get("arguments"), dict) else {},
+        }]}
+    if role == "tool":
+        result = entry.get("result") if isinstance(entry.get("result"), dict) else {}
+        data = result.get("data")
+        if data is None and result.get("error") is not None:
+            data = result.get("error")
+        text = data if isinstance(data, str) else json.dumps(data, ensure_ascii=False, default=str)
+        return {"role": "user", "content": [{
+            "type": "tool_result",
+            "toolCallId": str(entry.get("tool_call_id") or "staffdeck-call"),
+            "content": [{"type": "text", "text": text}],
+            "isError": not bool(result.get("success", True)),
+        }]}
+    if role == "assistant":
+        text = entry.get("reply_fragment") or entry.get("text")
+        if text:
+            return {"role": "assistant", "content": [{"type": "text", "text": str(text)}]}
+    return None
+
+
+def _attachment_message_to_canonical(message: Any) -> dict[str, Any] | None:
+    if not isinstance(message, dict):
+        return None
+    blocks: list[dict[str, Any]] = []
+    content = message.get("content")
+    if isinstance(content, str) and content:
+        blocks.append({"type": "text", "text": content})
+    for image in message.get("images", []) if isinstance(message.get("images"), list) else []:
+        if not isinstance(image, dict):
+            continue
+        image_url = image.get("image_url")
+        url = image_url.get("url") if isinstance(image_url, dict) else None
+        if not isinstance(url, str) or not url.startswith("data:") or ";base64," not in url:
+            continue
+        header, data = url.split(";base64,", 1)
+        mime = header.removeprefix("data:")
+        if mime and data:
+            detail = image_url.get("detail") if isinstance(image_url, dict) else None
+            blocks.append({
+                "type": "image",
+                "source": "base64",
+                "mimeType": mime,
+                "data": data,
+                **({"detail": detail} if detail in {"auto", "low", "high"} else {}),
+            })
+    return {"role": "user", "content": blocks} if blocks else None
+
+
+def _pilotdeck_context_metadata(
+    checkpoint: dict[str, Any],
+    *,
+    remaining_actions: int,
+) -> dict[str, Any]:
+    successful = int(checkpoint.get("successful_knowledge_searches") or 0)
+    return {
+        "iteration": int(checkpoint.get("iteration") or 1),
+        "remainingActions": int(remaining_actions),
+        "knowledgeSearchBudget": {
+            "maximumSuccessfulCalls": 2,
+            "successfulCalls": successful,
+            "remainingSuccessfulCalls": max(0, 2 - successful),
+        },
+        "recentTaskSummaries": list(checkpoint.get("recent_task_summaries") or [])[-8:],
+    }
