@@ -28,6 +28,10 @@ const { createRouterModelInvokerPort, createToolSchedulerPort } = await importFr
   sidecarRoot,
   "dist/src/agent/modules/adapters.js",
 );
+const { HostPermissionModeState } = await importFrom(
+  sidecarRoot,
+  "dist/src/agent/modules/permission/hostPermissionModeState.js",
+);
 const { requiresPromptCapability } = await importFrom(
   sourceRoot,
   "dist/src/tool/userInteractionConstraints.js",
@@ -48,6 +52,8 @@ let markToolStarted;
 const toolStarted = new Promise((resolve) => {
   markToolStarted = resolve;
 });
+let scenarioTurnIndex = 0;
+let scenarioTurnModelAttempt = 0;
 const push = (kind, extra = {}) => {
   trace.push({ kind, scenarioId: scenario.scenarioId, q: scenario.q, sequence: sequence++, ...extra });
 };
@@ -73,6 +79,7 @@ const post = async (pathname, body, signal) => {
 class MockModelRuntime {
   async *stream(request, options = {}) {
     modelAttempt += 1;
+    scenarioTurnModelAttempt += 1;
     push("model.request", { attempt: modelAttempt, modelView: modelView(request), request });
     markModelStarted();
     const fault = faultAt("model", modelAttempt);
@@ -100,6 +107,8 @@ class MockModelRuntime {
       delays: scenario.delays,
       toolDelays: scenario.toolDelays,
       faults: scenario.faults,
+      turnIndex: scenarioTurnIndex,
+      turnModelAttempt: scenarioTurnModelAttempt,
       runKey,
     }, options.signal);
     if (fault?.action === "malformed_response") {
@@ -150,16 +159,24 @@ class MockModelRuntime {
 }
 
 function createTools() {
-  return (scenario.tools ?? []).filter((name) => name !== "ask_user_question" && name !== "read_file").map((name) => ({
+  return (scenario.tools ?? []).filter((name) =>
+    name !== "ask_user_question"
+    && name !== "read_file"
+    && name !== "enter_plan_mode"
+    && name !== "exit_plan_mode",
+  ).map((name) => {
+    const concurrencySafe = ["lookup", "summarize"].includes(name);
+    return {
     name,
     description: name,
     kind: "custom",
     inputSchema: { type: "object" },
-    isReadOnly: () => !["restricted", "loop"].includes(name),
-    isConcurrencySafe: () => ["lookup", "summarize"].includes(name),
+    isReadOnly: () => !["restricted", "loop", "write_file", "parity_write_probe"].includes(name),
+    isConcurrencySafe: () => concurrencySafe,
     requiresUserInteraction: () => name === "ask_user_question",
-    checkPermissions: async () => {
-      push("permission.request", { toolName: name, mode: scenario.permission?.mode ?? "default", canPrompt: scenario.permission?.canPrompt ?? false });
+    checkPermissions: async (_input, context) => {
+      push("policy.context", { toolName: name, permissionMode: context.permissionMode, runMode: context.runMode });
+      push("permission.request", { toolName: name, mode: context.permissionMode, canPrompt: scenario.permission?.canPrompt ?? false });
       const deniedByRule = scenario.permission?.deny?.includes(name) ?? false;
       const deniedByAnswer = scenario.permission?.ask?.includes(name) && scenario.permission?.answer === "deny";
       const denied = deniedByRule || deniedByAnswer;
@@ -179,8 +196,9 @@ function createTools() {
           };
     },
     execute: async (input, context) => {
-      push("tool.call", { name, arguments: input });
-      push("tool.start", { name });
+      const toolCallId = context.currentToolCallId;
+      push("tool.call", { name, arguments: input, toolCallId, concurrencySafe });
+      push("tool.start", { name, toolCallId, concurrencySafe });
       markToolStarted();
       const forwardCancellation = () => {
         void post("/control/cancel", { runKey }).catch(() => undefined);
@@ -199,14 +217,15 @@ function createTools() {
       }, context.abortSignal).finally(() => {
         context.abortSignal?.removeEventListener("abort", forwardCancellation);
       });
-      push("tool.finish", { name, success: result.type === "success", error: result.error, sideEffectCount: result.data?.sideEffectCount });
-      push("tool.result", { result, sideEffectCount: result.data?.sideEffectCount });
+      push("tool.finish", { name, toolCallId, concurrencySafe, success: result.type === "success", error: result.error, sideEffectCount: result.data?.sideEffectCount });
+      push("tool.result", { result, toolCallId, concurrencySafe, sideEffectCount: result.data?.sideEffectCount });
       if (result.type === "error") {
         throw Object.assign(new Error(result.error.message), { code: result.error.code });
       }
       return { content: [{ type: "text", text: JSON.stringify(result.data) }], data: result.data };
     },
-  }));
+  };
+  });
 }
 
 function createParityReadFileTool() {
@@ -254,11 +273,16 @@ class StdioAgentLoopRunner {
     this.config = config;
     this.dependencies = dependencies;
     this.seedState = seedState;
-    this.modelPort = createRouterModelInvokerPort(dependencies.router, {
+    // Session composition supplies durable wrappers. Recreating raw adapters
+    // here would let permission/tool events reach SessionRuntime before their
+    // corresponding model_request is recorded.
+    this.modelPort = dependencies.ports?.model ?? createRouterModelInvokerPort(dependencies.router, {
       isMainAgent: true,
       projectPath: config.cwd,
     });
-    this.toolPort = createToolSchedulerPort(dependencies.tools.registry, dependencies.tools.scheduler);
+    this.toolPort = dependencies.ports?.tools
+      ?? createToolSchedulerPort(dependencies.tools.registry, dependencies.tools.scheduler);
+    this.permissionMode = new HostPermissionModeState(config);
   }
 
   snapshotFileState() {
@@ -266,15 +290,20 @@ class StdioAgentLoopRunner {
   }
 
   async *run(input) {
+    this.config.runMode = input.runMode ?? this.config.runMode ?? "agent";
+    this.permissionMode.applyTurnInput(input);
     const child = spawn(process.execPath, [path.join(sidecarRoot, "dist/src/cli/pilotdeck-agent-loop-sidecar.js")], {
       cwd: sidecarRoot,
       stdio: ["pipe", "pipe", "pipe"],
     });
     const queue = new MessageQueue();
     const errors = [];
+    const moduleWorkers = new Set();
+    const preparedModels = new Map();
     let projectedTurnCompleted;
     const reader = createInterface({ input: child.stdout });
     let terminalSeen = false;
+    const executeMessageId = `execute-${input.turnId}`;
     const requestId = `request-${input.turnId}`;
     const runId = input.execution?.runId ?? input.turnId;
     const operationId = input.execution?.operationId ?? input.turnId;
@@ -298,7 +327,7 @@ class StdioAgentLoopRunner {
       }
       if (message.kind === "request" && message.method === "module_call") {
         debug("module call", message.module, message.messageId);
-        void this.dispatchModule(message, input, queue).then(write, (error) => {
+        const worker = this.dispatchModule(message, input, queue, preparedModels).then(write, (error) => {
           write({
             kind: "response",
             messageId: `module-error-${message.messageId}`,
@@ -309,6 +338,8 @@ class StdioAgentLoopRunner {
             error: { message: error?.message ?? String(error) },
           });
         });
+        moduleWorkers.add(worker);
+        void worker.finally(() => moduleWorkers.delete(worker));
         return;
       }
       debug("sidecar message", message.kind, message.method ?? message.eventType ?? message.outcome ?? "", JSON.stringify({
@@ -338,7 +369,7 @@ class StdioAgentLoopRunner {
 
     write({
       kind: "request",
-      messageId: `execute-${input.turnId}`,
+      messageId: executeMessageId,
       method: "execute",
       runId,
       operationId,
@@ -361,6 +392,8 @@ class StdioAgentLoopRunner {
           modelOverride: input.modelOverride,
         },
         messages: input.messages,
+        basePermissionMode: input.basePermissionMode,
+        allowPlanModeTools: input.allowPlanModeTools,
         tools: this.dependencies.tools.registry.list().map((tool) => ({
           name: tool.name,
           description: tool.description,
@@ -378,10 +411,17 @@ class StdioAgentLoopRunner {
                 ...(typeof this.dependencies.context.applyToolResults === "function" ? ["apply_tool_results"] : []),
                 ...(typeof this.dependencies.context.recoverFromModelError === "function" ? ["recover_from_model_error"] : []),
                 ...(typeof this.dependencies.context.captureTurn === "function" ? ["capture_turn"] : []),
+                ...(typeof this.dependencies.context.tryAutoCompact === "function" ? ["try_auto_compact"] : []),
               ],
             },
           } : {}),
-          capability: { methods: ["execute", "execute_batch"] },
+          capability: {
+            methods: [
+              "execute",
+              "execute_batch",
+              ...(this.dependencies.planTodoManager ? ["plan_todo"] : []),
+            ],
+          },
         },
         permissionContext: {
           ...this.config.permissionContext,
@@ -401,6 +441,47 @@ class StdioAgentLoopRunner {
           yield message.payload;
           continue;
         }
+        if (message.kind === "response") {
+          if (message.inReplyTo !== executeMessageId) continue;
+          if (message.requestId !== requestId) {
+            throw new Error("Sidecar execute response does not match the active request.");
+          }
+          if (message.ok && message.final !== true) continue;
+          if (message.ok || message.final !== true || message.outcome !== "failed") {
+            throw new Error(`Invalid sidecar execute response: ${JSON.stringify(message)}`);
+          }
+          terminalSeen = true;
+          const now = new Date().toISOString();
+          const sidecarCode = message.code ?? message.error?.code;
+          const failureMessage = message.error?.message
+            ?? (sidecarCode ? `Sidecar rejected execute request: ${sidecarCode}` : "Sidecar rejected execute request.");
+          const terminalResult = {
+            result: {
+              type: "error",
+              sessionId: input.sessionId,
+              turnId: input.turnId,
+              stopReason: sidecarCode === "DEADLINE_EXCEEDED" ? "aborted_streaming" : "model_error",
+              usage: {},
+              permissionDenials: [],
+              turns: 0,
+              startedAt: now,
+              completedAt: now,
+              errors: [{
+                code: "agent_execution_rejected",
+                message: failureMessage,
+                ...(sidecarCode ? { details: { sidecarCode } } : {}),
+              }],
+            },
+            messages: input.messages,
+          };
+          yield {
+            type: "turn_completed",
+            sessionId: input.sessionId,
+            turnId: input.turnId,
+            result: terminalResult.result,
+          };
+          return terminalResult;
+        }
         if (message.kind !== "event") continue;
         if (message.runId !== runId || message.operationId !== operationId || message.requestId !== requestId) continue;
         if (!message.final) {
@@ -414,6 +495,10 @@ class StdioAgentLoopRunner {
         }
         terminalSeen = true;
         debug("sidecar terminal", message.outcome);
+        // The sidecar can observe cancellation before a host capability call
+        // finishes unwinding. Keep the Session-owned durable port alive until
+        // each accepted module call has written its final state.
+        await Promise.all([...moduleWorkers]);
         const payload = message.payload ?? {};
         let terminalResult;
         if (payload.result && Array.isArray(payload.messages)) {
@@ -476,29 +561,79 @@ class StdioAgentLoopRunner {
       input.abortSignal?.removeEventListener("abort", abort);
       reader.close();
       if (child.exitCode === null) child.kill();
+      preparedModels.clear();
     }
   }
 
-  async dispatchModule(message, input, queue) {
+  async dispatchModule(message, input, queue, preparedModels = new Map()) {
     const payload = message.payload ?? {};
     if (message.module === "model") {
       const context = { ...(payload.context ?? {}), abortSignal: input.abortSignal };
-      const prepared = await this.modelPort.prepare({ request: payload.request, context });
+      const preparationId = typeof payload.preparationId === "string" && payload.preparationId.length > 0
+        ? payload.preparationId
+        : undefined;
+      let prepared = preparationId ? preparedModels.get(preparationId) : undefined;
+      if (!prepared) {
+        prepared = await this.modelPort.prepare({ request: payload.request, context });
+        if (preparationId) preparedModels.set(preparationId, prepared);
+      }
       const events = [];
       for await (const event of this.modelPort.stream({ prepared, context })) events.push(event);
       return this.response(message, { events });
     }
     if (message.module === "capability") {
+      const remoteContext = payload.context && typeof payload.context === "object" ? payload.context : {};
+      const planDirectoryPath = this.dependencies.planFileManager?.getPlanDirectoryPath();
+      const planTodo = this.dependencies.planTodoManager?.forSession(input.sessionId);
       const toolContext = {
-        ...(payload.context ?? {}),
+        ...remoteContext,
+        sessionId: input.sessionId,
+        turnId: input.turnId,
+        cwd: this.config.cwd,
+        permissionMode: this.config.permissionMode,
+        permissionContext: {
+          ...(remoteContext.permissionContext ?? {}),
+          cwd: this.config.cwd,
+          mode: this.config.permissionMode,
+          ...(planDirectoryPath ? { planDirectoryPath } : {}),
+        },
+        runMode: this.config.runMode ?? "agent",
         abortSignal: input.abortSignal,
         auditRecorder: this.dependencies.auditRecorder,
         now: this.dependencies.now,
         elicitation: this.dependencies.elicitation,
         fileHistory: this.dependencies.fileHistory,
         fileUpdateNotifier: this.dependencies.fileUpdateNotifier,
+        ...(planTodo ? { planTodo } : {}),
+        ...(planDirectoryPath ? {
+          planDirectory: {
+            path: planDirectoryPath,
+            resolve: (filePath) => this.dependencies.planFileManager?.resolvePlanFilePath(filePath, this.config.cwd),
+            read: (filePath) => this.dependencies.planFileManager?.readPlanFile(filePath, this.config.cwd),
+          },
+        } : {}),
       };
       const execution = { ...(payload.execution ?? {}), abortSignal: input.abortSignal };
+      if (payload.operation === "plan_todo") {
+        const manager = this.dependencies.planTodoManager;
+        if (!manager) throw new Error("Host plan/todo runtime is unavailable.");
+        const sessionId = payload.sessionId ?? input.sessionId;
+        const turnId = payload.turnId ?? input.turnId;
+        if (payload.method === "read") {
+          return this.response(message, { snapshot: manager.forSession(sessionId).getSnapshot() });
+        }
+        const handle = manager.forSession(sessionId);
+        if (payload.method === "mark_plan_approved") {
+          await handle.markPlanApproved(payload.plan, { turnId });
+        } else if (payload.method === "record_todo_write") {
+          await handle.recordTodoWrite(payload.markdown, payload.todos ?? [], { turnId, reason: payload.reason });
+        } else if (payload.method === "write_todos") {
+          await handle.writeTodos(payload.todos ?? [], { turnId, markdown: payload.markdown, merge: payload.merge === true, reason: payload.reason });
+        } else {
+          throw new Error(`Unsupported sidecar plan/todo method: ${payload.method}`);
+        }
+        return this.response(message, { snapshot: handle.getSnapshot() });
+      }
       if (payload.operation === "execute_batch") {
         const calls = Array.isArray(payload.calls) ? payload.calls : [];
         const results = await this.toolPort.executeAll(calls.map((call) => ({
@@ -506,6 +641,7 @@ class StdioAgentLoopRunner {
           name: call.name,
           input: call.arguments ?? {},
         })), toolContext, execution);
+        this.permissionMode.applyCapabilityResults(results);
         for (const event of this.dependencies.drainEvents?.() ?? []) {
           queue.push({ kind: "host_event", payload: event });
         }
@@ -516,6 +652,7 @@ class StdioAgentLoopRunner {
         name: payload.name,
         input: payload.arguments ?? {},
       }], toolContext, execution);
+      this.permissionMode.applyCapabilityResults([result]);
       for (const event of this.dependencies.drainEvents?.() ?? []) {
         queue.push({ kind: "host_event", payload: event });
       }
@@ -525,6 +662,13 @@ class StdioAgentLoopRunner {
       const contextRuntime = this.dependencies.context;
       if (!contextRuntime) throw new Error("Host context runtime is unavailable.");
       const contextInput = { ...(payload.input ?? {}), abortSignal: input.abortSignal };
+      if (
+        payload.operation === "try_auto_compact"
+        && contextInput.maxContextTokens === undefined
+        && this.config.maxContextTokens !== undefined
+      ) {
+        contextInput.maxContextTokens = this.config.maxContextTokens;
+      }
       let result;
       if (payload.operation === "prepare_for_model") {
         result = await contextRuntime.prepareForModel(contextInput);
@@ -535,6 +679,8 @@ class StdioAgentLoopRunner {
       } else if (payload.operation === "capture_turn" && typeof contextRuntime.captureTurn === "function") {
         await contextRuntime.captureTurn(contextInput);
         result = null;
+      } else if (payload.operation === "try_auto_compact" && typeof contextRuntime.tryAutoCompact === "function") {
+        result = await contextRuntime.tryAutoCompact(contextInput);
       } else {
         throw new Error(`Unsupported host context operation: ${payload.operation}`);
       }
@@ -565,8 +711,11 @@ await mkdir(pilotHome, { recursive: true });
 process.env.PILOT_HOME = pilotHome;
 const projectRoot = pilotHome;
 const configuredContextTokens = scenario.limits?.maxContextTokens ?? 65536;
-await writeFile(path.join(pilotHome, "pilotdeck.yaml"), `schemaVersion: 1\nagent:\n  model: parity/deterministic\n  maxContextTokens: ${configuredContextTokens}\n  maxOutputTokens: 8192\nmodel:\n  providers:\n    parity:\n      protocol: openai\n      url: ${mockBaseUrl}\n      apiKey: parity-test\n      models:\n        deterministic:\n          capabilities:\n            supportsToolUse: true\n            maxContextTokens: ${configuredContextTokens}\n            maxOutputTokens: 8192\ntelemetry:\n  enabled: false\n`, "utf8");
+const configuredOutputTokens = scenario.limits?.maxOutputTokens ?? 8192;
+await writeFile(path.join(pilotHome, "pilotdeck.yaml"), `schemaVersion: 1\nagent:\n  model: parity/deterministic\n  maxContextTokens: ${configuredContextTokens}\n  maxOutputTokens: ${configuredOutputTokens}\nmodel:\n  providers:\n    parity:\n      protocol: openai\n      url: ${mockBaseUrl}\n      apiKey: parity-test\n      models:\n        deterministic:\n          capabilities:\n            supportsToolUse: true\n            maxContextTokens: ${configuredContextTokens}\n            maxOutputTokens: ${configuredOutputTokens}\ntelemetry:\n  enabled: false\n`, "utf8");
 await writeFile(path.join(projectRoot, "parity-input.txt"), "deterministic file content\n", "utf8");
+await mkdir(path.join(projectRoot, ".pilotdeck", "plans"), { recursive: true });
+await writeFile(path.join(projectRoot, ".pilotdeck", "plans", "parity-plan.md"), "# Parity plan\n\nExecute the deterministic plan.\n", "utf8");
 
   const local = createLocalGateway({
   projectRoot,
@@ -597,7 +746,7 @@ if (process.env.PARITY_SERVE_ONLY === "1") {
     process.once("SIGTERM", resolve);
   });
   await server.close();
-  local.dispose();
+  await local.dispose();
   await rm(runtimeRoot, { recursive: true, force: true });
   process.exit(0);
 }
@@ -629,31 +778,43 @@ try {
     attachments.push({ type: "image", name: "parity-image.png", path: imagePath, mimeType: match[1] });
   }
   const limits = scenario.limits ?? {};
-  const stream = client.stream("submit_turn", {
-    sessionKey,
-    channelKey: "test",
-    message: scenario.q,
-    attachments,
-    mode: scenario.permission?.mode ?? "default",
-    canPrompt: scenario.permission?.canPrompt ?? false,
-    maxTurns: limits.maxTurns,
-    timeoutMs: limits.deadlineMs,
-  });
-  const cancelAfterMs = limits.cancelAfterToolStartMs ?? limits.cancelAfterMs;
-  const cancelAnchor = limits.cancelAfterToolStartMs ? toolStarted : modelStarted;
-  const cancelTask = cancelAfterMs
-    ? cancelAnchor.then(() => new Promise((resolve) => setTimeout(resolve, cancelAfterMs))).then(async () => {
-        push("cancel.requested", { sessionKey });
-        await post("/control/cancel", { runKey });
-        return controlClient.request("abort_turn", { sessionKey, reason: "parity_cancel" }).then(
-          () => push("cancel.acknowledged", { sessionKey }),
-          (error) => push("cancel.error", { message: error?.message ?? String(error) }),
-        );
-      })
-    : undefined;
+  const scenarioTurns = Array.isArray(scenario.turns) && scenario.turns.length > 0
+    ? scenario.turns
+    : [{ message: scenario.q }];
   let visibleOutput = "";
   let terminal;
-  for await (const event of stream) {
+  let observedPermissionMode = scenario.permission?.mode ?? "default";
+  for (const [turnIndex, turn] of scenarioTurns.entries()) {
+    scenarioTurnIndex = turnIndex;
+    scenarioTurnModelAttempt = 0;
+    push("policy.turn", { permissionMode: observedPermissionMode, runMode: "agent" });
+    const streamInput = {
+      sessionKey,
+      channelKey: "test",
+      message: scenario.scenarioId === "auto_compact"
+        ? `${typeof turn?.message === "string" ? turn.message : scenario.q}\n${"LONG_CONTEXT ".repeat(1000)}`
+        : typeof turn?.message === "string" ? turn.message : scenario.q,
+      attachments: turnIndex === 0 ? attachments : [],
+      canPrompt: scenario.permission?.canPrompt ?? false,
+      maxTurns: limits.maxTurns,
+      timeoutMs: limits.deadlineMs,
+      ...(turn?.allowPlanModeTools ? { allowPlanModeTools: true } : {}),
+      ...(turn?.omitClientMode ? {} : { mode: scenario.permission?.mode ?? "default" }),
+    };
+    const stream = client.stream("submit_turn", streamInput);
+    const cancelAfterMs = limits.cancelAfterToolStartMs ?? limits.cancelAfterMs;
+    const cancelAnchor = limits.cancelAfterToolStartMs ? toolStarted : modelStarted;
+    const cancelTask = cancelAfterMs
+      ? cancelAnchor.then(() => new Promise((resolve) => setTimeout(resolve, cancelAfterMs))).then(async () => {
+          push("cancel.requested", { sessionKey });
+          await post("/control/cancel", { runKey });
+          return controlClient.request("abort_turn", { sessionKey, reason: "parity_cancel" }).then(
+            () => push("cancel.acknowledged", { sessionKey }),
+            (error) => push("cancel.error", { message: error?.message ?? String(error) }),
+          );
+        })
+      : undefined;
+    for await (const event of stream) {
     // Built-in tools (notably read_file) emit their lifecycle only through
     // the Gateway stream. Project those events into the same canonical trace
     // shape used by parity-owned tools; custom tools already trace internally.
@@ -682,18 +843,46 @@ try {
             : { type: "error", error: { code: event.errorCode, message: event.resultPreview } },
         });
       }
+      if (scenario.scenarioId === "plan_mode_host_policy" && event.errorCode === "plan_mode_violation") {
+        push("tool.finish", {
+          name: event.toolName,
+          toolCallId: event.toolCallId,
+          success: false,
+          error: { code: event.errorCode, message: event.resultPreview },
+        });
+        push("tool.result", {
+          toolCallId: event.toolCallId,
+          result: { type: "error", error: { code: event.errorCode, message: event.resultPreview } },
+        });
+      }
     }
     if (event.type === "permission_request") {
       push("permission.request", { requestId: event.requestId, toolName: event.toolName, payload: event.payload });
+    }
+    if (event.type === "elicitation_request" && event.toolName === "exit_plan_mode") {
+      const question = event.questions[0]?.question;
+      if (typeof question !== "string") {
+        throw new Error("exit_plan_mode elicitation did not include a question.");
+      }
+      const response = await client.request("elicitation_respond", {
+        sessionKey,
+        requestId: event.requestId,
+        answer: { type: "answered", answers: { [question]: "execute_plan" } },
+      });
+      if (!response || response.delivered !== true) {
+        throw new Error("Deterministic exit_plan_mode approval was not delivered.");
+      }
     }
     if (event.type === "assistant_text_delta") {
       visibleOutput += event.text;
       push("user.output", { text: event.text });
     }
+    if (event.type === "plan_mode_changed") observedPermissionMode = event.mode;
     if (event.type === "turn_completed") terminal = event;
     if (event.type === "error") push("gateway.error", { code: event.code, message: event.message });
+    }
+    if (cancelTask) await cancelTask;
   }
-  if (cancelTask) await cancelTask;
   const mockState = await post("/control/state", { runKey });
   const sideEffectCounts = mockState.sideEffects ?? {};
   push("side_effect.state", {
@@ -714,6 +903,6 @@ try {
   client.close();
   controlClient.close();
   await server.close();
-  local.dispose();
+  await local.dispose();
   await rm(runtimeRoot, { recursive: true, force: true });
 }

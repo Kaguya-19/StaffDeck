@@ -291,6 +291,7 @@ def main() -> int:
                     unique_jobs = {job[0]: job for job in jobs}
                     for name, command, mode, source_root, source_ref, pair_name in unique_jobs.values():
                         trace_path = args.output / f"{sid}.{name}.jsonl"
+                        scenario_surface = str(scenario.get("pilotdeckSurface") or args.pilotdeck_surface)
                         status = _run_adapter(
                             command,
                             scenario=scenario,
@@ -299,7 +300,7 @@ def main() -> int:
                             source_ref=source_ref,
                             mock_url=mock_url,
                             output=trace_path,
-                            pilotdeck_surface=args.pilotdeck_surface,
+                            pilotdeck_surface=scenario_surface,
                             timeout_seconds=args.adapter_timeout_seconds,
                             run_key=f"{sid}:{name}",
                         )

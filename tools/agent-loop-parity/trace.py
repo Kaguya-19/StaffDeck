@@ -64,13 +64,15 @@ _SEMANTIC_EVENT_FIELDS = {
     "model.request": {"modelView", "messages", "systemPrompt", "tools", "metadata", "attempt"},
     "model.response": {"modelView", "message", "content", "tool_calls", "stopReason", "usage", "errors", "structuredResult", "attempt"},
     "model.error": {"code", "message", "retryable", "attempt"},
-    "tool.call": {"name", "toolName", "arguments", "toolCallId", "context", "order", "sideEffectCount", "attempt"},
-    "tool.start": {"name", "toolName", "toolCallId", "order", "attempt"},
-    "tool.finish": {"name", "toolName", "toolCallId", "order", "success", "error", "sideEffectCount", "attempt"},
-    "tool.result": {"result", "data", "error", "toolName", "toolCallId", "success", "sideEffectCount", "attempt"},
+    "tool.call": {"name", "toolName", "arguments", "toolCallId", "context", "order", "sideEffectCount", "attempt", "concurrencySafe"},
+    "tool.start": {"name", "toolName", "toolCallId", "order", "attempt", "concurrencySafe"},
+    "tool.finish": {"name", "toolName", "toolCallId", "order", "success", "error", "sideEffectCount", "attempt", "concurrencySafe"},
+    "tool.result": {"result", "data", "error", "toolName", "toolCallId", "success", "sideEffectCount", "attempt", "concurrencySafe"},
     "permission.request": {"toolName", "toolCallId", "mode", "canPrompt"},
     "permission.answer": {"toolName", "toolCallId", "allowed", "code"},
     "permission.decision": {"toolName", "toolCallId", "allowed", "code", "retryable"},
+    "policy.context": {"toolName", "permissionMode", "runMode"},
+    "policy.turn": {"permissionMode", "runMode"},
     "sidecar.lifecycle": {"state", "stage", "code", "attempt"},
     "fault.injected": {"target", "action", "stage", "attempt"},
     "side_effect.state": {"counts", "sideEffectCount"},
@@ -80,6 +82,13 @@ _SEMANTIC_EVENT_FIELDS = {
     "session.state": {"activeSkillId", "activeStepId", "pendingTasks", "awaitingInput", "handoff", "slots", "priorTaskResults"},
     "terminal": {"outcome", "code", "stopReason", "structuredResult", "output", "frameStatus", "runStatus", "taskFrame", "session"},
     "user.output": {"text"},
+}
+
+_TOOL_LIFECYCLE_PHASE = {
+    "tool.call": 0,
+    "tool.start": 1,
+    "tool.finish": 2,
+    "tool.result": 3,
 }
 
 
@@ -102,8 +111,75 @@ def _semantic_record(record: dict[str, Any]) -> dict[str, Any]:
     return canonicalize(projected)
 
 
+def _tool_lifecycle_identity(record: dict[str, Any]) -> str | None:
+    for key in ("toolCallId", "callId"):
+        value = record.get(key)
+        if isinstance(value, str) and value:
+            return value
+    result = record.get("result")
+    if isinstance(result, dict):
+        for key in ("toolCallId", "callId"):
+            value = result.get(key)
+            if isinstance(value, str) and value:
+                return value
+    for key in ("name", "toolName"):
+        value = record.get(key)
+        if isinstance(value, str) and value:
+            return f"name:{value}"
+    if isinstance(result, dict) and isinstance(result.get("toolName"), str):
+        return f"name:{result['toolName']}"
+    return None
+
+
+def _canonicalize_parallel_tool_lifecycle(records: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Normalize only proven-safe concurrent callback completion interleavings.
+
+    The model receives tool results in call order. Host callback completion is
+    otherwise wall-clock dependent, so it is not semantic when every call in
+    the batch explicitly declares itself concurrency-safe and has a unique
+    identity. All other lifecycle traces retain their original order.
+    """
+    normalized = list(records)
+    index = 0
+    while index < len(normalized):
+        if normalized[index].get("kind") not in _TOOL_LIFECYCLE_PHASE:
+            index += 1
+            continue
+        end = index
+        while end < len(normalized) and normalized[end].get("kind") in _TOOL_LIFECYCLE_PHASE:
+            end += 1
+        group = normalized[index:end]
+        call_ids = [
+            _tool_lifecycle_identity(record)
+            for record in group
+            if record.get("kind") == "tool.call"
+        ]
+        identities = [_tool_lifecycle_identity(record) for record in group]
+        if (
+            len(call_ids) > 1
+            and None not in call_ids
+            and len(set(call_ids)) == len(call_ids)
+            and all(record.get("concurrencySafe") is True for record in group)
+            and all(identity in call_ids for identity in identities)
+        ):
+            order = {identity: offset for offset, identity in enumerate(call_ids)}
+            normalized[index:end] = [
+                record
+                for _, record in sorted(
+                    enumerate(group),
+                    key=lambda item: (
+                        order[_tool_lifecycle_identity(item[1])],
+                        _TOOL_LIFECYCLE_PHASE[item[1]["kind"]],
+                        item[0],
+                    ),
+                )
+            ]
+        index = end
+    return normalized
+
+
 def project_semantic_trace(records: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    return [_semantic_record(record) for record in records]
+    return _canonicalize_parallel_tool_lifecycle([_semantic_record(record) for record in records])
 
 
 def project_format_trace(records: list[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -200,6 +276,12 @@ def _record_value(records: list[dict[str, Any]], key: str) -> Any:
         "modelAttempts": sum(record.get("kind") == "model.request" for record in records),
         "pendingTasks": session.get("pendingTasks"),
     }
+    if key == "policyModes":
+        return [
+            record.get("permissionMode")
+            for record in records
+            if record.get("kind") == "policy.turn" and isinstance(record.get("permissionMode"), str)
+        ]
     if key == "toolCalls":
         calls = [
             record.get("name") or record.get("toolName")

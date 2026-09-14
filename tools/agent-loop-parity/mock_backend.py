@@ -101,6 +101,26 @@ class MockHandler(BaseHTTPRequestHandler):
         if delay_ms > 0:
             time.sleep(delay_ms / 1000)
         has_tool_result = any(_is_tool_result(item) for item in messages)
+        if scenario == "plan_mode_host_policy":
+            turn_index = int(request.get("turnIndex") or 0)
+            turn_model_attempt = int(request.get("turnModelAttempt") or 1)
+            if turn_index == 3:
+                if turn_model_attempt == 1:
+                    self._json(200, _tool_completion([("todo_write", {"markdown": "- [ ] Run the write probe"})]))
+                    return
+                if turn_model_attempt == 2:
+                    self._json(200, _tool_completion([("parity_write_probe", {})]))
+                    return
+                self._json(200, _completion(f"MOCK_PLAN_MODE_TURN[{turn_index}]::{q}"))
+                return
+            if turn_model_attempt == 1:
+                tools = ["enter_plan_mode", "parity_write_probe", "exit_plan_mode", "parity_write_probe"]
+                tool_name = tools[turn_index]
+                arguments = {"plan_file_path": ".pilotdeck/plans/parity-plan.md"} if tool_name == "exit_plan_mode" else {}
+                self._json(200, _tool_completion([(tool_name, arguments)]))
+                return
+            self._json(200, _completion(f"MOCK_PLAN_MODE_TURN[{turn_index}]::{q}"))
+            return
         image_present = any(
             "image_url" in item
             or (item.get("type") == "image" and item.get("source") == "base64")
@@ -231,6 +251,7 @@ class MockHandler(BaseHTTPRequestHandler):
         self._json(200, _completion(f"MOCK_RESPONSE::{q}"))
 
     def _tool(self, request: dict[str, Any]) -> None:
+        scenario = str(request.get("scenarioId") or "")
         delays = request.get("delays") if isinstance(request.get("delays"), dict) else {}
         name = str(request.get("name") or "")
         run_key = str(request.get("runKey") or "default")
@@ -273,12 +294,20 @@ class MockHandler(BaseHTTPRequestHandler):
         if name == "restricted" and request.get("permissionAllowed") is not True:
             self._json(200, {"type": "error", "toolName": name, "error": {"code": "PERMISSION_DENIED", "message": "Deterministic permission denial.", "retryable": False}})
             return
+        count_side_effect = scenario != "plan_mode_host_policy" or name == "parity_write_probe"
         with self.server.state_lock:
             side_effects = self.server.side_effects.setdefault(run_key, {})
-            side_effects[name] = int(side_effects.get(name, 0)) + 1
-            side_effect_count = side_effects[name]
+            if count_side_effect:
+                side_effects[name] = int(side_effects.get(name, 0)) + 1
+                side_effect_count = side_effects[name]
+            else:
+                side_effect_count = None
         data: dict[str, Any] = {"q": args.get("q"), "value": f"MOCK_TOOL_RESULT::{name}::{_stable(args)}"}
-        if name in {"side_effect", "slow_side_effect", "duplicate_execute"}:
+        if name == "parity_enter_plan_mode":
+            data["requestedMode"] = "plan"
+        elif name == "parity_exit_plan_mode":
+            data["requestedMode"] = "default"
+        if name in {"side_effect", "slow_side_effect", "duplicate_execute", "parity_write_probe"} and side_effect_count is not None:
             data["sideEffectCount"] = side_effect_count
         if name == "read_file":
             data["path"] = args.get("path")
