@@ -14,15 +14,27 @@ _VOLATILE_KEYS = {
 }
 _NULL_OPTIONAL_KEYS = {"code", "structuredResult"}
 _VOLATILE_ID = re.compile(r"^(?:[a-z_-]+-)?(?:[0-9a-f]{8,}|[0-9]{6,})$")
+_VOLATILE_MODEL_BLOCK_ID = re.compile(
+    r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}:(?:text|thinking):[0-9]+$",
+    re.IGNORECASE,
+)
 
 
 def canonicalize(value: Any, *, key: str | None = None) -> Any:
     if isinstance(value, dict):
         derived_image_bytes = value.get("type") == "image" and value.get("source") == "base64"
+        timeline_position = (
+            value.get("version") == 1
+            and isinstance(value.get("turnId"), str)
+            and isinstance(value.get("id"), str)
+            and isinstance(value.get("order"), int)
+            and isinstance(value.get("revision"), int)
+        )
         return {
             k: canonicalize(v, key=k)
             for k, v in sorted(value.items())
             if k not in _VOLATILE_KEYS
+            and not (timeline_position and k == "turnId")
             and not (k in _NULL_OPTIONAL_KEYS and v is None)
             and not (derived_image_bytes and k == "bytes")
         }
@@ -30,6 +42,8 @@ def canonicalize(value: Any, *, key: str | None = None) -> Any:
         return [canonicalize(item) for item in value]
     if isinstance(value, str) and key == "handoff_id" and value:
         return "<generated-id>"
+    if isinstance(value, str) and key in {"blockId", "id"} and _VOLATILE_MODEL_BLOCK_ID.match(value):
+        return f"<generated-model-block>:{value.rsplit(':', 2)[1]}:{value.rsplit(':', 1)[1]}"
     if isinstance(value, str) and key in {"id", "callId", "toolCallId"} and _VOLATILE_ID.match(value):
         return "<generated-id>"
     return value

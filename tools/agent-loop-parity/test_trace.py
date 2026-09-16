@@ -69,5 +69,103 @@ class ConcurrentToolTraceTests(unittest.TestCase):
         self.assertTrue(compare_traces(native, sidecar))
 
 
+class TimelineTraceTests(unittest.TestCase):
+    def test_generated_timeline_turn_id_is_not_semantic(self) -> None:
+        native = [{
+            "kind": "model.request",
+            "scenarioId": "timeline",
+            "q": "compare",
+            "sequence": 0,
+            "messages": [{
+                "role": "assistant",
+                "content": [{
+                    "type": "tool_call",
+                    "id": "call-1",
+                    "timeline": {
+                        "version": 1,
+                        "turnId": "native-generated-turn",
+                        "id": "tool:call-1",
+                        "order": 0,
+                        "revision": 1,
+                    },
+                }],
+            }],
+        }]
+        sidecar = [{
+            **native[0],
+            "messages": [{
+                "role": "assistant",
+                "content": [{
+                    "type": "tool_call",
+                    "id": "call-1",
+                    "timeline": {
+                        "version": 1,
+                        "turnId": "sidecar-generated-turn",
+                        "id": "tool:call-1",
+                        "order": 0,
+                        "revision": 1,
+                    },
+                }],
+            }],
+        }]
+        self.assertEqual(compare_traces(native, sidecar), [])
+
+    def test_generated_model_block_identity_is_not_semantic(self) -> None:
+        native = [{
+            "kind": "model.request",
+            "scenarioId": "timeline",
+            "q": "compare",
+            "sequence": 0,
+            "messages": [{
+                "role": "assistant",
+                "content": [{
+                    "type": "text",
+                    "text": "same",
+                    "blockId": "11111111-1111-4111-8111-111111111111:text:0",
+                    "timeline": {
+                        "version": 1,
+                        "turnId": "native-turn",
+                        "id": "11111111-1111-4111-8111-111111111111:text:0",
+                        "order": 0,
+                        "revision": 1,
+                    },
+                }],
+            }],
+        }]
+        sidecar = [{
+            **native[0],
+            "messages": [{
+                "role": "assistant",
+                "content": [{
+                    "type": "text",
+                    "text": "same",
+                    "blockId": "22222222-2222-4222-8222-222222222222:text:0",
+                    "timeline": {
+                        "version": 1,
+                        "turnId": "sidecar-turn",
+                        "id": "22222222-2222-4222-8222-222222222222:text:0",
+                        "order": 0,
+                        "revision": 1,
+                    },
+                }],
+            }],
+        }]
+        self.assertEqual(compare_traces(native, sidecar), [])
+
+    def test_non_timeline_turn_id_remains_semantic(self) -> None:
+        native = [{
+            "kind": "checkpoint",
+            "scenarioId": "turn-identity",
+            "q": "compare",
+            "sequence": 0,
+            "messages": [{"turnId": "native-turn"}],
+        }]
+        sidecar = [{
+            **native[0],
+            "messages": [{"turnId": "sidecar-turn"}],
+        }]
+        self.assertTrue(compare_traces(native, sidecar))
+
+
 if __name__ == "__main__":
     unittest.main()
