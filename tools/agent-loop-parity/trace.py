@@ -104,6 +104,7 @@ _TOOL_LIFECYCLE_PHASE = {
     "tool.finish": 2,
     "tool.result": 3,
 }
+_PARALLEL_TOOL_BATCH_KINDS = {*_TOOL_LIFECYCLE_PHASE, "permission.decision"}
 
 
 def _semantic_record(record: dict[str, Any]) -> dict[str, Any]:
@@ -156,24 +157,56 @@ def _canonicalize_parallel_tool_lifecycle(records: list[dict[str, Any]]) -> list
     normalized = list(records)
     index = 0
     while index < len(normalized):
-        if normalized[index].get("kind") not in _TOOL_LIFECYCLE_PHASE:
+        if normalized[index].get("kind") not in _PARALLEL_TOOL_BATCH_KINDS:
             index += 1
             continue
         end = index
-        while end < len(normalized) and normalized[end].get("kind") in _TOOL_LIFECYCLE_PHASE:
+        while end < len(normalized) and normalized[end].get("kind") in _PARALLEL_TOOL_BATCH_KINDS:
             end += 1
         group = normalized[index:end]
-        call_ids = [
-            _tool_lifecycle_identity(record)
-            for record in group
-            if record.get("kind") == "tool.call"
-        ]
-        identities = [_tool_lifecycle_identity(record) for record in group]
+        call_records = [record for record in group if record.get("kind") == "tool.call"]
+        call_ids = [_tool_lifecycle_identity(record) for record in call_records]
+        call_by_name = {
+            str(record.get("name") or record.get("toolName") or ""): call_id
+            for record, call_id in zip(call_records, call_ids)
+        }
+        permission_indices = {
+            str(record.get("toolName") or ""): offset
+            for offset, record in enumerate(group)
+            if record.get("kind") == "permission.decision"
+        }
+        call_indices = {
+            call_id: offset
+            for offset, (record, call_id) in enumerate(zip(group, [_tool_lifecycle_identity(item) for item in group]))
+            if record.get("kind") == "tool.call" and call_id is not None
+        }
+        def identity(record: dict[str, Any]) -> str | None:
+            if record.get("kind") == "permission.decision":
+                return call_by_name.get(str(record.get("toolName") or ""))
+            return _tool_lifecycle_identity(record)
+
+        identities = [identity(record) for record in group]
         if (
             len(call_ids) > 1
             and None not in call_ids
             and len(set(call_ids)) == len(call_ids)
-            and all(record.get("concurrencySafe") is True for record in group)
+            and len(call_by_name) == len(call_ids)
+            and (
+                not permission_indices
+                or (
+                    len(permission_indices) == len(call_ids)
+                    and set(permission_indices) == set(call_by_name)
+                    and all(
+                        permission_indices[name] < call_indices[call_id]
+                        for name, call_id in call_by_name.items()
+                    )
+                )
+            )
+            and all(
+                record.get("concurrencySafe") is True
+                for record in group
+                if record.get("kind") in _TOOL_LIFECYCLE_PHASE
+            )
             and all(identity in call_ids for identity in identities)
         ):
             order = {identity: offset for offset, identity in enumerate(call_ids)}
@@ -182,8 +215,8 @@ def _canonicalize_parallel_tool_lifecycle(records: list[dict[str, Any]]) -> list
                 for _, record in sorted(
                     enumerate(group),
                     key=lambda item: (
-                        order[_tool_lifecycle_identity(item[1])],
-                        _TOOL_LIFECYCLE_PHASE[item[1]["kind"]],
+                        order[identity(item[1])],
+                        -1 if item[1].get("kind") == "permission.decision" else _TOOL_LIFECYCLE_PHASE[item[1]["kind"]],
                         item[0],
                     ),
                 )
@@ -269,26 +302,34 @@ def _record_value(records: list[dict[str, Any]], key: str) -> Any:
     taskframe = _last(records, "taskframe") or {}
     session = _last(records, "session.state") or {}
     checkpoint = _last(records, "checkpoint") or {}
+    task_frame_state = taskframe.get("taskFrame")
+    if not isinstance(task_frame_state, dict):
+        task_frame_state = terminal.get("taskFrame")
+    if not isinstance(task_frame_state, dict):
+        task_frame_state = {}
+    session_state = terminal.get("session")
+    if not isinstance(session_state, dict):
+        session_state = {}
     mapping = {
         "terminalOutcome": terminal.get("outcome"),
         "errorCode": terminal.get("code"),
         "stopReason": terminal.get("stopReason"),
-        "frameStatus": terminal.get("frameStatus") or taskframe.get("status") or (taskframe.get("taskFrame") or {}).get("status"),
+        "frameStatus": terminal.get("frameStatus") or taskframe.get("status") or task_frame_state.get("status"),
         "runStatus": terminal.get("runStatus"),
-        "taskFrameStatus": taskframe.get("status") or (taskframe.get("taskFrame") or {}).get("status"),
-        "activeStepId": session.get("activeStepId") or checkpoint.get("activeStepId"),
-        "nextStepId": taskframe.get("nextStepId"),
-        "awaitingInput": session.get("awaitingInput"),
-        "handoff": session.get("handoff"),
-        "slots": session.get("slots") or taskframe.get("slots") or checkpoint.get("slots"),
-        "knowledgeBudget": taskframe.get("knowledgeBudget") or checkpoint.get("knowledgeBudget"),
-        "requiredCapabilities": taskframe.get("requiredCapabilities"),
-        "priorTaskResults": taskframe.get("priorTaskResults") or session.get("priorTaskResults"),
-        "executionTarget": taskframe.get("executionTarget") or session.get("executionTarget"),
-        "forcedSopVersion": taskframe.get("forcedSopVersion") or session.get("forcedSopVersion"),
+        "taskFrameStatus": taskframe.get("status") or task_frame_state.get("status"),
+        "activeStepId": session.get("activeStepId") or session_state.get("activeStepId") or checkpoint.get("activeStepId"),
+        "nextStepId": taskframe.get("nextStepId") or task_frame_state.get("nextStepId"),
+        "awaitingInput": session.get("awaitingInput") or session_state.get("awaitingInput"),
+        "handoff": session.get("handoff") or session_state.get("handoff"),
+        "slots": session.get("slots") or taskframe.get("slots") or session_state.get("slots") or task_frame_state.get("slots") or checkpoint.get("slots"),
+        "knowledgeBudget": taskframe.get("knowledgeBudget") or task_frame_state.get("knowledgeBudget") or checkpoint.get("knowledgeBudget"),
+        "requiredCapabilities": taskframe.get("requiredCapabilities") or task_frame_state.get("requiredCapabilities"),
+        "priorTaskResults": taskframe.get("priorTaskResults") or session.get("priorTaskResults") or task_frame_state.get("priorTaskResults") or session_state.get("priorTaskResults"),
+        "executionTarget": taskframe.get("executionTarget") or session.get("executionTarget") or task_frame_state.get("executionTarget") or session_state.get("executionTarget"),
+        "forcedSopVersion": taskframe.get("forcedSopVersion") or session.get("forcedSopVersion") or task_frame_state.get("forcedSopVersion") or session_state.get("forcedSopVersion"),
         "output": terminal.get("output"),
         "modelAttempts": sum(record.get("kind") == "model.request" for record in records),
-        "pendingTasks": session.get("pendingTasks"),
+        "pendingTasks": session.get("pendingTasks") or session_state.get("pendingTasks"),
     }
     if key == "policyModes":
         return [
@@ -408,6 +449,9 @@ def validate_trace_expectations(
         elif key == "outputContains":
             output = _record_value(records, "output")
             actual = isinstance(output, str) and str(wanted) in output
+            wanted = True
+        elif key == "awaitingInput" and wanted is True:
+            actual = _record_value(records, key) is not None
             wanted = True
         else:
             actual = _record_value(records, key)

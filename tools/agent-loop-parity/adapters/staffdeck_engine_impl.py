@@ -138,7 +138,7 @@ def _manifest(scenario: dict[str, Any]) -> CapabilityManifest:
 
 def _skill(scenario: dict[str, Any]) -> Skill | None:
     sop = scenario.get("sop") or scenario.get("forcedSopSnapshot")
-    if not isinstance(sop, dict) and scenario["scenarioId"] != "deadline":
+    if not isinstance(sop, dict) and scenario["scenarioId"] not in {"deadline", "deadline_during_tool"}:
         return None
     if isinstance(sop, dict):
         nodes = []
@@ -148,6 +148,7 @@ def _skill(scenario: dict[str, Any]) -> Skill | None:
             node = {
                 "node_id": raw.get("id") or raw.get("node_id"),
                 "type": raw.get("type", "task"),
+                "node_type": raw.get("type", "task"),
                 "instruction": raw.get("instruction") or "Execute the deterministic SOP step.",
             }
             required_slots = raw.get("requiredSlots") or raw.get("expectedUserInfo")
@@ -183,6 +184,11 @@ def _skill(scenario: dict[str, Any]) -> Skill | None:
             "edges": edges,
             "goal": [str(scenario.get("q") or "")],
         }
+        step_timeout_seconds = (scenario.get("limits") or {}).get(
+            "stepTimeoutSeconds"
+        )
+        if step_timeout_seconds is not None:
+            content["step_timeout_seconds"] = int(step_timeout_seconds)
         return Skill(
             id=f"skill-parity-{scenario['scenarioId']}",
             tenant_id="tenant-parity",
@@ -202,7 +208,9 @@ def _skill(scenario: dict[str, Any]) -> Skill | None:
         status="published",
         content_json={
             "start_node_id": "wait",
-            "step_timeout_seconds": 1,
+            "step_timeout_seconds": int(
+                (scenario.get("limits") or {}).get("stepTimeoutSeconds") or 1
+            ),
             "nodes": [
                 {
                     "node_id": "wait",
@@ -216,6 +224,12 @@ def _skill(scenario: dict[str, Any]) -> Skill | None:
 
 
 def _plan(scenario: dict[str, Any], skill: Skill | None) -> TurnPlan:
+    content = skill.content_json if skill is not None else {}
+    start_step_id = (
+        str(content.get("start_node_id") or "").strip()
+        if isinstance(content, dict)
+        else ""
+    )
     return TurnPlan(
         decision="start_new_task" if skill else "answer_only",
         selected_task_id=f"task-{scenario['scenarioId']}",
@@ -226,13 +240,31 @@ def _plan(scenario: dict[str, Any], skill: Skill | None) -> TurnPlan:
                 kind="sop" if skill else "conversation",
                 decision="start_new_task" if skill else "answer_only",
                 target_skill_id=skill.skill_id if skill else None,
-                target_step_id="wait" if skill else None,
+                target_step_id=start_step_id or None,
                 user_intent=str(scenario["q"]),
                 requirements=[str(scenario["q"])],
+                slot_hints=dict(scenario.get("knownSlots") or {}),
+                execution_target=(
+                    "team_member"
+                    if scenario.get("executionTarget") == "team_member"
+                    else "self"
+                ),
                 source_message=str(scenario["q"]),
             )
         ],
     )
+
+
+def _forced_sop_snapshot(scenario: dict[str, Any], skill: Skill | None) -> dict[str, Any] | None:
+    raw = scenario.get("forcedSopSnapshot")
+    if not isinstance(raw, dict) or skill is None:
+        return None
+    return {
+        "skill_id": skill.skill_id,
+        "version": skill.version,
+        "name": skill.name,
+        "content_json": dict(skill.content_json),
+    }
 
 
 def _attachments(scenario: dict[str, Any]) -> list[ChatAttachmentRead]:
@@ -624,6 +656,14 @@ def main(expected_mode: str | None = None) -> int:
         recorder.add("tool.call", name=name, arguments=arguments)
         recorder.add("tool.start", name=name)
         tool_started.set()
+        step_timeout_seconds = (scenario.get("limits") or {}).get(
+            "stepTimeoutSeconds"
+        )
+        operation_deadline_epoch_ms = (
+            int(time.time() * 1000) + int(step_timeout_seconds) * 1000
+            if step_timeout_seconds is not None
+            else None
+        )
         result = post(
             f"{mock_url}/tools/execute",
             {
@@ -636,6 +676,10 @@ def main(expected_mode: str | None = None) -> int:
                 "toolDelays": scenario.get("toolDelays", {}),
                 "faults": scenario.get("faults", {}),
                 "runKey": RUN_KEY,
+                # The real invoker receives a remaining-time override.  This
+                # deterministic provider fault point needs the same deadline
+                # so it can prove a timed-out write was never committed.
+                "operationDeadlineEpochMs": operation_deadline_epoch_ms,
             },
         )
         recorder.add("tool.finish", name=name, success=result.get("type") == "success", error=result.get("error"), sideEffectCount=(result.get("data") or {}).get("sideEffectCount"))
@@ -701,8 +745,8 @@ def main(expected_mode: str | None = None) -> int:
             message=str(scenario["q"]),
             attachments=_attachments(scenario),
             interaction_mode=interaction_mode,
-            forced_sop_id=(str((scenario.get("forcedSopSnapshot") or {}).get("id")) if scenario.get("forcedSopSnapshot") else None),
-            forced_sop_snapshot=(scenario.get("forcedSopSnapshot") if isinstance(scenario.get("forcedSopSnapshot"), dict) else None),
+            forced_sop_id=(skill.skill_id if scenario.get("forcedSopSnapshot") and skill else None),
+            forced_sop_snapshot=_forced_sop_snapshot(scenario, skill),
         )
         cancel_after_ms = int(limits.get("cancelAfterMs") or limits.get("cancelAfterToolStartMs") or 0)
         if cancel_after_ms:

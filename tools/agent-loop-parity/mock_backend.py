@@ -101,7 +101,7 @@ class MockHandler(BaseHTTPRequestHandler):
         if delay_ms > 0:
             time.sleep(delay_ms / 1000)
         has_tool_result = any(_is_tool_result(item) for item in messages)
-        if scenario == "plan_mode_host_policy":
+        if request.get("planModePolicy") is True:
             turn_index = int(request.get("turnIndex") or 0)
             turn_model_attempt = int(request.get("turnModelAttempt") or 1)
             if turn_index == 3:
@@ -129,7 +129,7 @@ class MockHandler(BaseHTTPRequestHandler):
         if not scenario:
             self._production_model(messages, q, has_tool_result)
             return
-        if scenario == "pure_text" or scenario in {"image", "checkpoint_resume", "multimodal_image_and_text", "stale_event", "write_snapshot_resume", "duplicate_execute", "sop_scheduled_task", "sop_handoff_resume"}:
+        if scenario == "pure_text" or scenario in {"image", "checkpoint_resume", "multimodal_image_and_text", "stale_event", "write_snapshot_resume", "sop_scheduled_task", "sop_handoff_resume"}:
             content = f"MOCK_ANSWER[{scenario}]::{q}"
             if scenario == "image" and not image_present:
                 content = "MOCK_IMAGE_MISSING"
@@ -145,12 +145,12 @@ class MockHandler(BaseHTTPRequestHandler):
         if scenario == "sop_multi_action_budget":
             self._json(200, _tool_completion([("loop", {"q": q})]))
             return
-        if scenario in {"single_tool", "tool_error", "permission_denial", "max_turns", "permission_allow", "permission_ask_approve", "permission_ask_deny", "allowed_read_files", "denied_read_files", "cancel_during_tool", "deadline_during_tool", "sidecar_restart_before_effect", "sidecar_restart_after_effect", "sop_single_step_complete", "sop_step_advance", "sop_conditional_transition", "sop_slot_update_and_resume", "sop_known_slot_reuse", "sop_required_capability_gate", "sop_required_capability_failure", "sop_required_knowledge_search", "sop_knowledge_budget_exhausted", "sop_checkpoint_resume", "sop_failed_step_recovery", "sop_team_task", "sop_cancel_during_tool", "sop_deadline_during_tool", "sop_unknown_requeue", "large_tool_result", "tool_retryable_error", "tool_non_retryable_error"} and not has_tool_result:
+        if scenario in {"single_tool", "tool_error", "permission_denial", "max_turns", "permission_allow", "permission_ask_approve", "permission_ask_deny", "allowed_read_files", "denied_read_files", "cancel_during_tool", "deadline_during_tool", "sidecar_restart_before_effect", "sidecar_restart_after_effect", "duplicate_execute", "sop_single_step_complete", "sop_step_advance", "sop_conditional_transition", "sop_slot_update_and_resume", "sop_known_slot_reuse", "sop_required_capability_gate", "sop_required_capability_failure", "sop_required_knowledge_search", "sop_knowledge_budget_exhausted", "sop_checkpoint_resume", "sop_failed_step_recovery", "sop_team_task", "sop_cancel_during_tool", "sop_deadline_during_tool", "sop_unknown_requeue", "large_tool_result", "tool_retryable_error", "tool_non_retryable_error"} and not has_tool_result:
             tool = {
                 "single_tool": "lookup", "tool_error": "lookup_error", "permission_denial": "restricted", "max_turns": "loop",
                 "permission_allow": "lookup", "permission_ask_approve": "lookup", "permission_ask_deny": "lookup",
                 "allowed_read_files": "read_file", "denied_read_files": "read_file", "cancel_during_tool": "slow_side_effect",
-                "deadline_during_tool": "slow_side_effect", "sidecar_restart_before_effect": "side_effect", "sidecar_restart_after_effect": "side_effect",
+                "deadline_during_tool": "slow_side_effect", "sidecar_restart_before_effect": "side_effect", "sidecar_restart_after_effect": "side_effect", "duplicate_execute": "side_effect",
                 "sop_single_step_complete": "lookup", "sop_step_advance": "lookup", "sop_conditional_transition": "lookup",
                 "sop_slot_update_and_resume": "lookup", "sop_known_slot_reuse": "lookup", "sop_required_capability_gate": "lookup",
                 "sop_required_capability_failure": "lookup_error", "sop_required_knowledge_search": "knowledge_search",
@@ -271,16 +271,27 @@ class MockHandler(BaseHTTPRequestHandler):
                     self.server.barrier_condition.wait(timeout=remaining)
         tool_delays = request.get("toolDelays") if isinstance(request.get("toolDelays"), dict) else {}
         delay_ms = int(tool_delays.get(name) or delays.get("toolMs") or 0)
-        remaining_ms = delay_ms
-        while remaining_ms > 0:
+        deadline_epoch_ms = int(request.get("operationDeadlineEpochMs") or 0)
+
+        def cancelled_or_expired() -> bool:
             with self.server.state_lock:
                 cancelled = run_key in self.server.cancelled
-            if cancelled:
+            return cancelled or (
+                deadline_epoch_ms > 0
+                and int(time.time() * 1000) >= deadline_epoch_ms
+            )
+
+        remaining_ms = delay_ms
+        while remaining_ms > 0:
+            if cancelled_or_expired():
                 self._json(200, {"type": "error", "toolName": name, "error": {"code": "CANCELLED", "message": "Deterministic tool cancellation.", "retryable": False}})
                 return
             interval = min(10, remaining_ms)
             time.sleep(interval / 1000)
             remaining_ms -= interval
+        if cancelled_or_expired():
+            self._json(200, {"type": "error", "toolName": name, "error": {"code": "CANCELLED", "message": "Deterministic tool cancellation.", "retryable": False}})
+            return
         args = request.get("arguments") if isinstance(request.get("arguments"), dict) else {}
         if name == "lookup_error":
             self._json(200, {"type": "error", "toolName": name, "error": {"code": "MOCK_TOOL_ERROR", "message": "Deterministic tool failure.", "retryable": False}})
@@ -294,7 +305,7 @@ class MockHandler(BaseHTTPRequestHandler):
         if name == "restricted" and request.get("permissionAllowed") is not True:
             self._json(200, {"type": "error", "toolName": name, "error": {"code": "PERMISSION_DENIED", "message": "Deterministic permission denial.", "retryable": False}})
             return
-        count_side_effect = scenario != "plan_mode_host_policy" or name == "parity_write_probe"
+        count_side_effect = request.get("planModePolicy") is not True or name == "parity_write_probe"
         with self.server.state_lock:
             side_effects = self.server.side_effects.setdefault(run_key, {})
             if count_side_effect:

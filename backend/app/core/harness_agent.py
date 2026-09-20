@@ -43,7 +43,7 @@ class HarnessAction(BaseModel):
     action: Literal["tool", "finish"]
     tool_name: str | None = None
     arguments: dict[str, Any] = Field(default_factory=dict)
-    status: Literal["completed", "awaiting_user", "handoff", "failed"] | None = None
+    status: Literal["completed", "awaiting_user", "handoff", "failed", "blocked"] | None = None
     reply_fragment: str = ""
     slot_updates: dict[str, Any] = Field(default_factory=dict)
     next_step_id: str | None = None
@@ -259,7 +259,7 @@ class HarnessTaskAgent:
                                         },
                                         "required_finish_envelope": {
                                             "action": "finish",
-                                            "status": "completed | awaiting_user | handoff | failed",
+                                            "status": "completed | awaiting_user | handoff | failed | blocked",
                                         },
                                     },
                                 }
@@ -368,6 +368,28 @@ class HarnessTaskAgent:
                                 "missing_capabilities": missing_capabilities,
                             },
                         )
+                    # A required capability has already produced a terminal
+                    # failure in this TaskFrame. Retrying the model without a
+                    # changed capability result cannot satisfy the completion
+                    # gate; settle the same resumable action-budget terminal
+                    # used by the sidecar projection instead of manufacturing
+                    # no-op model turns.
+                    if _has_failed_required_capability(
+                        requirement,
+                        capability_results,
+                    ):
+                        return finish(TaskExecutionResult(
+                            task_frame_id=requirement.task_frame_id,
+                            status="action_budget",
+                            reply_fragment="当前任务已达到本轮自动执行上限，需要下一轮继续。",
+                            citations=citations,
+                            evidence_results=evidence_results,
+                            capability_results=capability_results,
+                            artifacts=artifacts,
+                            task_summary="Harness 强制能力执行失败，TaskFrame 保持可恢复。",
+                            action_count=iteration,
+                            error={"code": "ACTION_BUDGET_EXHAUSTED"},
+                        ))
                     continue
                 return finish(_finish_result(
                     requirement,
@@ -711,6 +733,19 @@ def _missing_required_capabilities(
         if knowledge_base_id not in satisfied_required_knowledge_ids:
             missing.append(f"knowledge_search:{knowledge_base_id}")
     return missing
+
+
+def _has_failed_required_capability(
+    requirement: TaskRequirement,
+    capability_results: list[dict[str, Any]],
+) -> bool:
+    required = set(requirement.required_capability_names)
+    return any(
+        isinstance(item, dict)
+        and str(item.get("tool_name") or item.get("toolName") or "") in required
+        and item.get("success") is False
+        for item in capability_results
+    )
 
 
 def _has_usable_knowledge_evidence(result: dict[str, Any]) -> bool:

@@ -9,6 +9,7 @@ import subprocess
 import sys
 import tempfile
 import time
+import re
 from pathlib import Path
 from trace import (
     Difference,
@@ -59,6 +60,16 @@ def _load_scenarios(
 def _known_gap_matches(scenario: dict[str, Any], differences: list[Difference]) -> bool:
     expected = sorted(str(item) for item in scenario.get("expectedDifferencePaths") or [])
     observed = sorted(item.path for item in differences)
+    return bool(expected) and observed == expected
+
+
+def _declared_semantic_difference_matches(scenario: dict[str, Any], differences: list[Difference]) -> bool:
+    """Accept only an explicitly enumerated, adapter-oracle-validated difference."""
+    expected = sorted(str(item) for item in scenario.get("declaredSemanticDifferencePaths") or [])
+    observed = sorted(
+        re.sub(r"^trace\[\d+\]\.(outcome|stopReason)$", r"terminal.\1", item.path)
+        for item in differences
+    )
     return bool(expected) and observed == expected
 
 
@@ -239,6 +250,7 @@ def main() -> int:
     oracle_failures: list[str] = []
     format_warnings: list[str] = []
     known_gaps: list[str] = []
+    declared_semantic_differences: list[str] = []
     baseline_differences: list[str] = []
     skipped_not_applicable: list[str] = []
     try:
@@ -333,6 +345,16 @@ def main() -> int:
                         if is_baseline:
                             if comparison.semantic:
                                 baseline_differences.append(f"{comparison_name}: {len(comparison.semantic)} semantic difference(s)")
+                        elif (
+                            scenario.get("declaredSemanticDifferencePaths")
+                            and comparison_name.split()[-1].lower() in set(scenario.get("declaredSemanticDifferencePairs") or [])
+                        ):
+                            if _declared_semantic_difference_matches(scenario, comparison.semantic):
+                                declared_semantic_differences.append(
+                                    f"{comparison_name}: declared {len(comparison.semantic)} exact difference(s)"
+                                )
+                            else:
+                                failed.append(f"{comparison_name}: declared semantic difference did not match contract")
                         elif scenario["suite"] == "known-gap":
                             if _known_gap_matches(scenario, comparison.semantic):
                                 known_gaps.append(f"{comparison_name}: reproduced {len(comparison.semantic)} expected difference(s)")
@@ -355,6 +377,7 @@ def main() -> int:
         "failed": failed,
         "oracleFailures": oracle_failures,
         "knownGaps": known_gaps,
+        "declaredSemanticDifferences": declared_semantic_differences,
         "baselineDifferences": baseline_differences,
         "skippedNotApplicable": skipped_not_applicable,
         "formatWarnings": format_warnings,

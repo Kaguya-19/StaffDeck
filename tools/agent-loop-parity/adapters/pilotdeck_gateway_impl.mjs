@@ -1,8 +1,6 @@
-import { spawn } from "node:child_process";
 import { mkdtemp, mkdir, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
-import { createInterface } from "node:readline";
 import { pathToFileURL } from "node:url";
 
 const sourceRoot = process.env.PARITY_SOURCE_ROOT;
@@ -24,18 +22,6 @@ const importFrom = (root, relative) => import(pathToFileURL(path.join(root, rela
 const { createLocalGateway } = await importFrom(sourceRoot, "dist/src/cli/createLocalGateway.js");
 const { startPilotDeckServer } = await importFrom(sourceRoot, "dist/src/cli/pilotdeckServer.js");
 const { GatewayWsClient } = await importFrom(sourceRoot, "dist/src/gateway/client/GatewayWsClient.js");
-const { createRouterModelInvokerPort, createToolSchedulerPort } = await importFrom(
-  sidecarRoot,
-  "dist/src/agent/modules/adapters.js",
-);
-const { HostPermissionModeState } = await importFrom(
-  sidecarRoot,
-  "dist/src/agent/modules/permission/hostPermissionModeState.js",
-);
-const { requiresPromptCapability } = await importFrom(
-  sourceRoot,
-  "dist/src/tool/userInteractionConstraints.js",
-);
 const { DEFAULT_MODEL_CAPABILITIES } = await importFrom(
   sourceRoot,
   "dist/src/model/protocol/capabilities.js",
@@ -107,6 +93,7 @@ class MockModelRuntime {
       delays: scenario.delays,
       toolDelays: scenario.toolDelays,
       faults: scenario.faults,
+      planModePolicy: scenario.planModePolicy === true,
       turnIndex: scenarioTurnIndex,
       turnModelAttempt: scenarioTurnModelAttempt,
       runKey,
@@ -204,19 +191,37 @@ function createTools() {
         void post("/control/cancel", { runKey }).catch(() => undefined);
       };
       context.abortSignal?.addEventListener("abort", forwardCancellation, { once: true });
-      const result = await post("/tools/execute", {
-        scenarioId: scenario.scenarioId,
-        q: scenario.q,
-        name,
-        arguments: input,
-        permissionAllowed: true,
-        delays: scenario.delays,
-        toolDelays: scenario.toolDelays,
-        faults: scenario.faults,
-        runKey,
-      }, context.abortSignal).finally(() => {
+      let result;
+      try {
+        result = await post("/tools/execute", {
+          scenarioId: scenario.scenarioId,
+          q: scenario.q,
+          name,
+          arguments: input,
+          permissionAllowed: true,
+          delays: scenario.delays,
+          toolDelays: scenario.toolDelays,
+          faults: scenario.faults,
+          planModePolicy: scenario.planModePolicy === true,
+          runKey,
+        }, context.abortSignal);
+      } catch (error) {
+        if (!context.abortSignal?.aborted) throw error;
+        // Native and stdio can observe the same cancelled mock call at
+        // different points around fetch abort. Preserve the canonical tool
+        // cancellation before handing it back to the normal scheduler.
+        result = {
+          type: "error",
+          toolName: name,
+          error: {
+            code: "CANCELLED",
+            message: "Deterministic tool cancellation.",
+            retryable: false,
+          },
+        };
+      } finally {
         context.abortSignal?.removeEventListener("abort", forwardCancellation);
-      });
+      }
       push("tool.finish", { name, toolCallId, concurrencySafe, success: result.type === "success", error: result.error, sideEffectCount: result.data?.sideEffectCount });
       push("tool.result", { result, toolCallId, concurrencySafe, sideEffectCount: result.data?.sideEffectCount });
       if (result.type === "error") {
@@ -245,461 +250,6 @@ function createParityReadFileTool() {
   };
 }
 
-class MessageQueue {
-  values = [];
-  waiters = [];
-  failure;
-
-  push(value) {
-    const waiter = this.waiters.shift();
-    if (waiter) waiter.resolve(value);
-    else this.values.push(value);
-  }
-
-  fail(error) {
-    this.failure = error;
-    for (const waiter of this.waiters.splice(0)) waiter.reject(error);
-  }
-
-  async shift() {
-    if (this.values.length) return this.values.shift();
-    if (this.failure) throw this.failure;
-    return new Promise((resolve, reject) => this.waiters.push({ resolve, reject }));
-  }
-}
-
-class StdioAgentLoopRunner {
-  constructor(config, dependencies, seedState) {
-    this.config = config;
-    this.dependencies = dependencies;
-    this.seedState = seedState;
-    // Session composition supplies durable wrappers. Recreating raw adapters
-    // here would let permission/tool events reach SessionRuntime before their
-    // corresponding model_request is recorded.
-    this.modelPort = dependencies.ports?.model ?? createRouterModelInvokerPort(dependencies.router, {
-      isMainAgent: true,
-      projectPath: config.cwd,
-    });
-    this.toolPort = dependencies.ports?.tools
-      ?? createToolSchedulerPort(dependencies.tools.registry, dependencies.tools.scheduler);
-    this.permissionMode = new HostPermissionModeState(config);
-  }
-
-  snapshotFileState() {
-    return this.seedState ?? { allowedReadFiles: [] };
-  }
-
-  async *run(input) {
-    this.config.runMode = input.runMode ?? this.config.runMode ?? "agent";
-    this.permissionMode.applyTurnInput(input);
-    const child = spawn(process.execPath, [path.join(sidecarRoot, "dist/src/cli/pilotdeck-agent-loop-sidecar.js")], {
-      cwd: sidecarRoot,
-      stdio: ["pipe", "pipe", "pipe"],
-    });
-    const queue = new MessageQueue();
-    const errors = [];
-    const moduleWorkers = new Set();
-    const preparedModels = new Map();
-    let projectedTurnCompleted;
-    const reader = createInterface({ input: child.stdout });
-    let terminalSeen = false;
-    const executeMessageId = `execute-${input.turnId}`;
-    const requestId = `request-${input.turnId}`;
-    const runId = input.execution?.runId ?? input.turnId;
-    const operationId = input.execution?.operationId ?? input.turnId;
-    const write = (message) => child.stdin.write(`${JSON.stringify(message)}\n`);
-
-    child.stderr.on("data", (chunk) => errors.push(String(chunk)));
-    child.on("error", (error) => queue.fail(error));
-    child.on("exit", (code) => {
-      debug("sidecar exit", code);
-      if (!terminalSeen) {
-        queue.fail(new Error(`AgentLoop sidecar exited before terminal result (${code}): ${errors.join("")}`));
-      }
-    });
-    reader.on("line", (line) => {
-      let message;
-      try {
-        message = JSON.parse(line);
-      } catch (error) {
-        queue.fail(error);
-        return;
-      }
-      if (message.kind === "request" && message.method === "module_call") {
-        debug("module call", message.module, message.messageId);
-        const worker = this.dispatchModule(message, input, queue, preparedModels).then(write, (error) => {
-          write({
-            kind: "response",
-            messageId: `module-error-${message.messageId}`,
-            inReplyTo: message.messageId,
-            requestId: message.requestId,
-            ok: false,
-            code: error?.code ?? "MODULE_ERROR",
-            error: { message: error?.message ?? String(error) },
-          });
-        });
-        moduleWorkers.add(worker);
-        void worker.finally(() => moduleWorkers.delete(worker));
-        return;
-      }
-      debug("sidecar message", message.kind, message.method ?? message.eventType ?? message.outcome ?? "", JSON.stringify({
-        final: message.final,
-        runId: message.runId,
-        operationId: message.operationId,
-        requestId: message.requestId,
-        expected: { runId, operationId, requestId },
-      }));
-      queue.push(message);
-    });
-
-    const abort = () => {
-      if (child.exitCode !== null) return;
-      debug("forward cancel", operationId);
-      write({
-        kind: "request",
-        messageId: `cancel-${input.turnId}`,
-        method: "cancel",
-        runId,
-        operationId,
-        requestId,
-        reason: String(input.abortSignal?.reason ?? "host_cancelled"),
-      });
-    };
-    input.abortSignal?.addEventListener("abort", abort, { once: true });
-
-    write({
-      kind: "request",
-      messageId: executeMessageId,
-      method: "execute",
-      runId,
-      operationId,
-      requestId,
-      sessionId: input.sessionId,
-      turnId: input.turnId,
-      idempotencyKey: input.execution?.idempotencyKey,
-      operationDeadline: input.execution?.operationDeadline,
-      payload: {
-        agent: {
-          provider: this.config.provider,
-          model: this.config.model,
-          cwd: this.config.cwd,
-          systemPrompt: this.config.systemPrompt,
-          maxOutputTokens: this.config.maxOutputTokens,
-          maxContextTokens: this.config.maxContextTokens,
-          runMode: input.runMode ?? this.config.runMode,
-          permissionMode: input.permissionMode ?? this.config.permissionMode,
-          maxTurns: input.maxTurns,
-          modelOverride: input.modelOverride,
-        },
-        messages: input.messages,
-        basePermissionMode: input.basePermissionMode,
-        allowPlanModeTools: input.allowPlanModeTools,
-        tools: this.dependencies.tools.registry.list().map((tool) => ({
-          name: tool.name,
-          description: tool.description,
-          kind: tool.kind,
-          inputSchema: tool.inputSchema,
-          readOnly: tool.isReadOnly({}),
-          concurrencySafe: tool.isConcurrencySafe({}),
-          requiresUserInteraction: requiresPromptCapability(tool, {}),
-        })),
-        hostModules: {
-          ...(this.dependencies.context ? {
-            context: {
-              methods: [
-                "prepare_for_model",
-                ...(typeof this.dependencies.context.applyToolResults === "function" ? ["apply_tool_results"] : []),
-                ...(typeof this.dependencies.context.recoverFromModelError === "function" ? ["recover_from_model_error"] : []),
-                ...(typeof this.dependencies.context.captureTurn === "function" ? ["capture_turn"] : []),
-                ...(typeof this.dependencies.context.tryAutoCompact === "function" ? ["try_auto_compact"] : []),
-              ],
-            },
-          } : {}),
-          capability: {
-            methods: [
-              "execute",
-              "execute_batch",
-              ...(this.dependencies.planTodoManager ? ["plan_todo"] : []),
-            ],
-          },
-        },
-        permissionContext: {
-          ...this.config.permissionContext,
-          mode: input.permissionMode ?? this.config.permissionMode,
-          canPrompt: input.canPrompt ?? this.config.permissionContext.canPrompt,
-          rules: input.permissionRules ?? this.config.permissionContext.rules,
-        },
-        seedState: this.seedState,
-        executionContext: this.config.metadata,
-      },
-    });
-
-    try {
-      while (true) {
-        const message = await queue.shift();
-        if (message.kind === "host_event") {
-          yield message.payload;
-          continue;
-        }
-        if (message.kind === "response") {
-          if (message.inReplyTo !== executeMessageId) continue;
-          if (message.requestId !== requestId) {
-            throw new Error("Sidecar execute response does not match the active request.");
-          }
-          if (message.ok && message.final !== true) continue;
-          if (message.ok || message.final !== true || message.outcome !== "failed") {
-            throw new Error(`Invalid sidecar execute response: ${JSON.stringify(message)}`);
-          }
-          terminalSeen = true;
-          const now = new Date().toISOString();
-          const sidecarCode = message.code ?? message.error?.code;
-          const failureMessage = message.error?.message
-            ?? (sidecarCode ? `Sidecar rejected execute request: ${sidecarCode}` : "Sidecar rejected execute request.");
-          const terminalResult = {
-            result: {
-              type: "error",
-              sessionId: input.sessionId,
-              turnId: input.turnId,
-              stopReason: sidecarCode === "DEADLINE_EXCEEDED" ? "aborted_streaming" : "model_error",
-              usage: {},
-              permissionDenials: [],
-              turns: 0,
-              startedAt: now,
-              completedAt: now,
-              errors: [{
-                code: "agent_execution_rejected",
-                message: failureMessage,
-                ...(sidecarCode ? { details: { sidecarCode } } : {}),
-              }],
-            },
-            messages: input.messages,
-          };
-          yield {
-            type: "turn_completed",
-            sessionId: input.sessionId,
-            turnId: input.turnId,
-            result: terminalResult.result,
-          };
-          return terminalResult;
-        }
-        if (message.kind !== "event") continue;
-        if (message.runId !== runId || message.operationId !== operationId || message.requestId !== requestId) continue;
-        if (!message.final) {
-          if (message.payload?.type === "turn_completed") {
-            projectedTurnCompleted = message.payload;
-            continue;
-          }
-          if (input.abortSignal?.aborted) continue;
-          yield message.payload;
-          continue;
-        }
-        terminalSeen = true;
-        debug("sidecar terminal", message.outcome);
-        // The sidecar can observe cancellation before a host capability call
-        // finishes unwinding. Keep the Session-owned durable port alive until
-        // each accepted module call has written its final state.
-        await Promise.all([...moduleWorkers]);
-        const payload = message.payload ?? {};
-        let terminalResult;
-        if (payload.result && Array.isArray(payload.messages)) {
-          terminalResult = { result: payload.result, messages: payload.messages };
-        } else if (projectedTurnCompleted?.result) {
-          terminalResult = { result: projectedTurnCompleted.result, messages: input.messages };
-        } else if (message.outcome === "cancelled") {
-          const now = new Date().toISOString();
-          terminalResult = {
-            result: {
-              type: "aborted",
-              sessionId: input.sessionId,
-              turnId: input.turnId,
-              stopReason: "aborted_streaming",
-              usage: {},
-              permissionDenials: [],
-              turns: 0,
-              startedAt: now,
-              completedAt: now,
-            },
-            messages: input.messages,
-          };
-        } else if (message.outcome === "failed") {
-          const now = new Date().toISOString();
-          terminalResult = {
-            result: {
-              type: "error",
-              sessionId: input.sessionId,
-              turnId: input.turnId,
-              stopReason: "model_error",
-              usage: {},
-              permissionDenials: [],
-              turns: 0,
-              startedAt: now,
-              completedAt: now,
-              errors: [{
-                code: message.code ?? message.error?.code ?? "sidecar_execution_failed",
-                message: message.error?.message ?? "Sidecar execution failed.",
-              }],
-            },
-            messages: input.messages,
-          };
-        } else {
-          throw new Error(`Invalid sidecar terminal payload: ${JSON.stringify(message)}`);
-        }
-        const durableMessages = terminalResult.messages.slice(input.messages.length);
-        for (const durableMessage of durableMessages) {
-          await input.onDurableMessage?.(durableMessage);
-        }
-        yield {
-          type: "turn_completed",
-          sessionId: input.sessionId,
-          turnId: input.turnId,
-          result: terminalResult.result,
-        };
-        return terminalResult;
-      }
-    } finally {
-      debug("runner cleanup");
-      input.abortSignal?.removeEventListener("abort", abort);
-      reader.close();
-      if (child.exitCode === null) child.kill();
-      preparedModels.clear();
-    }
-  }
-
-  async dispatchModule(message, input, queue, preparedModels = new Map()) {
-    const payload = message.payload ?? {};
-    if (message.module === "model") {
-      const context = { ...(payload.context ?? {}), abortSignal: input.abortSignal };
-      const preparationId = typeof payload.preparationId === "string" && payload.preparationId.length > 0
-        ? payload.preparationId
-        : undefined;
-      let prepared = preparationId ? preparedModels.get(preparationId) : undefined;
-      if (!prepared) {
-        prepared = await this.modelPort.prepare({ request: payload.request, context });
-        if (preparationId) preparedModels.set(preparationId, prepared);
-      }
-      const events = [];
-      for await (const event of this.modelPort.stream({ prepared, context })) events.push(event);
-      return this.response(message, { events });
-    }
-    if (message.module === "capability") {
-      const remoteContext = payload.context && typeof payload.context === "object" ? payload.context : {};
-      const planDirectoryPath = this.dependencies.planFileManager?.getPlanDirectoryPath();
-      const planTodo = this.dependencies.planTodoManager?.forSession(input.sessionId);
-      const toolContext = {
-        ...remoteContext,
-        sessionId: input.sessionId,
-        turnId: input.turnId,
-        cwd: this.config.cwd,
-        permissionMode: this.config.permissionMode,
-        permissionContext: {
-          ...(remoteContext.permissionContext ?? {}),
-          cwd: this.config.cwd,
-          mode: this.config.permissionMode,
-          ...(planDirectoryPath ? { planDirectoryPath } : {}),
-        },
-        runMode: this.config.runMode ?? "agent",
-        abortSignal: input.abortSignal,
-        auditRecorder: this.dependencies.auditRecorder,
-        now: this.dependencies.now,
-        elicitation: this.dependencies.elicitation,
-        fileHistory: this.dependencies.fileHistory,
-        fileUpdateNotifier: this.dependencies.fileUpdateNotifier,
-        ...(planTodo ? { planTodo } : {}),
-        ...(planDirectoryPath ? {
-          planDirectory: {
-            path: planDirectoryPath,
-            resolve: (filePath) => this.dependencies.planFileManager?.resolvePlanFilePath(filePath, this.config.cwd),
-            read: (filePath) => this.dependencies.planFileManager?.readPlanFile(filePath, this.config.cwd),
-          },
-        } : {}),
-      };
-      const execution = { ...(payload.execution ?? {}), abortSignal: input.abortSignal };
-      if (payload.operation === "plan_todo") {
-        const manager = this.dependencies.planTodoManager;
-        if (!manager) throw new Error("Host plan/todo runtime is unavailable.");
-        const sessionId = payload.sessionId ?? input.sessionId;
-        const turnId = payload.turnId ?? input.turnId;
-        if (payload.method === "read") {
-          return this.response(message, { snapshot: manager.forSession(sessionId).getSnapshot() });
-        }
-        const handle = manager.forSession(sessionId);
-        if (payload.method === "mark_plan_approved") {
-          await handle.markPlanApproved(payload.plan, { turnId });
-        } else if (payload.method === "record_todo_write") {
-          await handle.recordTodoWrite(payload.markdown, payload.todos ?? [], { turnId, reason: payload.reason });
-        } else if (payload.method === "write_todos") {
-          await handle.writeTodos(payload.todos ?? [], { turnId, markdown: payload.markdown, merge: payload.merge === true, reason: payload.reason });
-        } else {
-          throw new Error(`Unsupported sidecar plan/todo method: ${payload.method}`);
-        }
-        return this.response(message, { snapshot: handle.getSnapshot() });
-      }
-      if (payload.operation === "execute_batch") {
-        const calls = Array.isArray(payload.calls) ? payload.calls : [];
-        const results = await this.toolPort.executeAll(calls.map((call) => ({
-          id: call.toolCallId,
-          name: call.name,
-          input: call.arguments ?? {},
-        })), toolContext, execution);
-        this.permissionMode.applyCapabilityResults(results);
-        for (const event of this.dependencies.drainEvents?.() ?? []) {
-          queue.push({ kind: "host_event", payload: event });
-        }
-        return this.response(message, { results });
-      }
-      const [result] = await this.toolPort.executeAll([{
-        id: payload.toolCallId,
-        name: payload.name,
-        input: payload.arguments ?? {},
-      }], toolContext, execution);
-      this.permissionMode.applyCapabilityResults([result]);
-      for (const event of this.dependencies.drainEvents?.() ?? []) {
-        queue.push({ kind: "host_event", payload: event });
-      }
-      return this.response(message, result);
-    }
-    if (message.module === "context") {
-      const contextRuntime = this.dependencies.context;
-      if (!contextRuntime) throw new Error("Host context runtime is unavailable.");
-      const contextInput = { ...(payload.input ?? {}), abortSignal: input.abortSignal };
-      if (
-        payload.operation === "try_auto_compact"
-        && contextInput.maxContextTokens === undefined
-        && this.config.maxContextTokens !== undefined
-      ) {
-        contextInput.maxContextTokens = this.config.maxContextTokens;
-      }
-      let result;
-      if (payload.operation === "prepare_for_model") {
-        result = await contextRuntime.prepareForModel(contextInput);
-      } else if (payload.operation === "apply_tool_results" && typeof contextRuntime.applyToolResults === "function") {
-        result = await contextRuntime.applyToolResults(contextInput);
-      } else if (payload.operation === "recover_from_model_error" && typeof contextRuntime.recoverFromModelError === "function") {
-        result = await contextRuntime.recoverFromModelError(contextInput);
-      } else if (payload.operation === "capture_turn" && typeof contextRuntime.captureTurn === "function") {
-        await contextRuntime.captureTurn(contextInput);
-        result = null;
-      } else if (payload.operation === "try_auto_compact" && typeof contextRuntime.tryAutoCompact === "function") {
-        result = await contextRuntime.tryAutoCompact(contextInput);
-      } else {
-        throw new Error(`Unsupported host context operation: ${payload.operation}`);
-      }
-      return this.response(message, { result });
-    }
-    return this.response(message, { accepted: true });
-  }
-
-  response(message, payload) {
-    return {
-      kind: "response",
-      messageId: `response-${message.messageId}`,
-      inReplyTo: message.messageId,
-      requestId: message.requestId,
-      ok: true,
-      payload,
-    };
-  }
-}
 
 const configuredRuntimeRoot = process.env.PARITY_RUNTIME_ROOT;
 const runtimeRoot = configuredRuntimeRoot
@@ -717,19 +267,37 @@ await writeFile(path.join(projectRoot, "parity-input.txt"), "deterministic file 
 await mkdir(path.join(projectRoot, ".pilotdeck", "plans"), { recursive: true });
 await writeFile(path.join(projectRoot, ".pilotdeck", "plans", "parity-plan.md"), "# Parity plan\n\nExecute the deterministic plan.\n", "utf8");
 
-  const local = createLocalGateway({
+const productionSidecarEvidence = {
+  selectedTransport: mode === "sidecar" ? "stdio" : "native",
+  handshakeCompleted: false,
+  moduleCalls: [],
+};
+const gatewayEnv = {
+  ...process.env,
+  PILOTDECK_AGENT_LOOP_TRANSPORT: mode === "sidecar" ? "stdio" : "native",
+  ...(mode === "sidecar" ? {
+    PILOTDECK_AGENT_LOOP_SIDECAR_PATH: path.join(sidecarRoot, "dist/src/cli/pilotdeck-agent-loop-sidecar.js"),
+  } : {}),
+};
+const local = createLocalGateway({
   projectRoot,
   pilotHome,
+  env: gatewayEnv,
   permissionMode: scenario.permission?.mode ?? "default",
-    extraTools: [
-      ...createTools(),
-    ],
+  extraTools: [
+    ...createTools(),
+  ],
   __testModelFactory: () => new MockModelRuntime(),
   autoElicitation: scenario.permission?.answer === "allow",
-  ...(mode === "sidecar" ? {
-    __testAgentLoopFactory: ({ config, dependencies, seedState }) =>
-      new StdioAgentLoopRunner(config, dependencies, seedState),
-  } : {}),
+  agentLoopTransportObserver: {
+    observe(event) {
+      if (mode !== "sidecar") return;
+      if (event.type === "handshake_completed") productionSidecarEvidence.handshakeCompleted = true;
+      if (event.type === "module_call_received") {
+        productionSidecarEvidence.moduleCalls.push({ module: event.module, operation: event.operation });
+      }
+    },
+  },
 });
 const server = await startPilotDeckServer({
   gateway: local.gateway,
@@ -843,7 +411,7 @@ try {
             : { type: "error", error: { code: event.errorCode, message: event.resultPreview } },
         });
       }
-      if (scenario.scenarioId === "plan_mode_host_policy" && event.errorCode === "plan_mode_violation") {
+      if (scenario.planModePolicy === true && event.errorCode === "plan_mode_violation") {
         push("tool.finish", {
           name: event.toolName,
           toolCallId: event.toolCallId,
@@ -884,6 +452,15 @@ try {
     if (cancelTask) await cancelTask;
   }
   const mockState = await post("/control/state", { runKey });
+  if (mode === "sidecar") {
+    if (!productionSidecarEvidence.handshakeCompleted) {
+      throw new Error("BLOCKED: production sidecar handshake was not observed.");
+    }
+    if (productionSidecarEvidence.moduleCalls.length === 0) {
+      throw new Error("BLOCKED: production sidecar performed no host module calls.");
+    }
+    await writeFile(`${traceOut}.proof.json`, `${JSON.stringify(productionSidecarEvidence)}\n`, "utf8");
+  }
   const sideEffectCounts = mockState.sideEffects ?? {};
   push("side_effect.state", {
     counts: sideEffectCounts,

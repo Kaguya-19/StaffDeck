@@ -23,6 +23,54 @@ def lifecycle(kind: str, name: str, call_id: str, sequence: int, *, concurrency_
 
 
 class ConcurrentToolTraceTests(unittest.TestCase):
+    def test_concurrent_permission_interleaving_preserves_per_tool_causality(self) -> None:
+        def permission(name: str, sequence: int) -> dict[str, object]:
+            return {
+                "kind": "permission.decision",
+                "scenarioId": "parallel-tools",
+                "q": "compare",
+                "sequence": sequence,
+                "toolName": name,
+                "allowed": True,
+            }
+
+        native = [
+            permission("lookup", 0),
+            permission("summarize", 1),
+            lifecycle("tool.call", "lookup", "call-lookup", 2, concurrency_safe=True),
+            lifecycle("tool.call", "summarize", "call-summarize", 3, concurrency_safe=True),
+            lifecycle("tool.result", "lookup", "call-lookup", 4, concurrency_safe=True),
+            lifecycle("tool.result", "summarize", "call-summarize", 5, concurrency_safe=True),
+        ]
+        sidecar = [
+            permission("lookup", 0),
+            lifecycle("tool.call", "lookup", "call-lookup", 1, concurrency_safe=True),
+            permission("summarize", 2),
+            lifecycle("tool.call", "summarize", "call-summarize", 3, concurrency_safe=True),
+            lifecycle("tool.result", "summarize", "call-summarize", 4, concurrency_safe=True),
+            lifecycle("tool.result", "lookup", "call-lookup", 5, concurrency_safe=True),
+        ]
+        self.assertEqual(compare_traces(native, sidecar), [])
+
+    def test_permission_after_its_tool_call_is_not_normalized(self) -> None:
+        native = [
+            {"kind": "permission.decision", "toolName": "lookup", "allowed": True},
+            lifecycle("tool.call", "lookup", "call-lookup", 1, concurrency_safe=True),
+            lifecycle("tool.call", "summarize", "call-summarize", 2, concurrency_safe=True),
+            {"kind": "permission.decision", "toolName": "summarize", "allowed": True},
+            lifecycle("tool.result", "lookup", "call-lookup", 4, concurrency_safe=True),
+            lifecycle("tool.result", "summarize", "call-summarize", 5, concurrency_safe=True),
+        ]
+        sidecar = [
+            {"kind": "permission.decision", "toolName": "lookup", "allowed": True},
+            lifecycle("tool.call", "lookup", "call-lookup", 1, concurrency_safe=True),
+            {"kind": "permission.decision", "toolName": "summarize", "allowed": True},
+            lifecycle("tool.call", "summarize", "call-summarize", 3, concurrency_safe=True),
+            lifecycle("tool.result", "lookup", "call-lookup", 4, concurrency_safe=True),
+            lifecycle("tool.result", "summarize", "call-summarize", 5, concurrency_safe=True),
+        ]
+        self.assertTrue(compare_traces(native, sidecar))
+
     def test_concurrent_completion_order_is_compared_by_call_identity(self) -> None:
         native = [
             lifecycle("tool.call", "lookup", "call-lookup", 0, concurrency_safe=True),

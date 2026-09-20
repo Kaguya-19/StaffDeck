@@ -104,6 +104,7 @@ def main() -> int:
     started = time.monotonic()
     cancel_sent = threading.Event()
     tool_cancel_scheduled = threading.Event()
+    deadline_expired = threading.Event()
 
     def record(kind: str, **extra: Any) -> None:
         nonlocal sequence
@@ -145,6 +146,21 @@ def main() -> int:
 
     threading.Thread(target=cancel_later, daemon=True).start()
 
+    def cancel_mock_at_deadline() -> None:
+        deadline_ms = int(limits.get("deadlineMs") or 0)
+        if deadline_ms <= 0:
+            return
+        threading.Event().wait(deadline_ms / 1000)
+        deadline_expired.set()
+        try:
+            post(f"{mock}/control/cancel", {"runKey": run_key})
+        except Exception:
+            # The sidecar deadline remains authoritative when the controllable
+            # fault endpoint has already been torn down.
+            pass
+
+    threading.Thread(target=cancel_mock_at_deadline, daemon=True).start()
+
     def respond_to_module_call(
         message: dict[str, Any],
         module: str,
@@ -171,11 +187,25 @@ def main() -> int:
                 else:
                     events.extend([{"type": "text_delta", "text": choice.get("content") or ""}, {"type": "message_end", "finishReason": "stop"}])
                 response = {"kind": "response", "messageId": f"model-response-{attempt}", "inReplyTo": message["messageId"], "requestId": message.get("requestId"), "ok": True, "payload": {"events": events}}
-                record("model.response", attempt=attempt, response=choice)
+                if not deadline_expired.is_set():
+                    record("model.response", attempt=attempt, response=choice)
         elif module == "capability":
             tool_name = str(call_payload.get("name") or "")
             tool_call_id = call_payload.get("toolCallId")
-            result = post(f"{mock}/tools/execute", {"scenarioId": scenario_id, "q": q, "runKey": run_key, "name": tool_name, "arguments": call_payload.get("arguments") or {}, "permissionAllowed": allowed_for(tool_name, call_payload), "delays": scenario.get("delays"), "toolDelays": scenario.get("toolDelays"), "faults": scenario.get("faults")})
+            allowed = allowed_for(tool_name, call_payload)
+            if allowed:
+                result = post(f"{mock}/tools/execute", {"scenarioId": scenario_id, "q": q, "runKey": run_key, "name": tool_name, "arguments": call_payload.get("arguments") or {}, "permissionAllowed": True, "delays": scenario.get("delays"), "toolDelays": scenario.get("toolDelays"), "faults": scenario.get("faults")})
+            else:
+                result = {
+                    "type": "error",
+                    "toolCallId": tool_call_id,
+                    "toolName": tool_name,
+                    "error": {
+                        "code": "PERMISSION_DENIED",
+                        "message": "Deterministic permission denial.",
+                        "retryable": False,
+                    },
+                }
             result.setdefault("toolCallId", call_payload.get("toolCallId"))
             result.setdefault("toolName", tool_name)
             result["content"] = ([{"type": "text", "text": json.dumps(result.get("data", {}), ensure_ascii=False, sort_keys=True, separators=(",", ":"))}] if result.get("type") == "success" else [{"type": "text", "text": result.get("error", {}).get("message", "mock tool error")}])
@@ -187,12 +217,17 @@ def main() -> int:
                 trace_result["data"] = result.get("data")
             else:
                 trace_result["error"] = result.get("error")
-            record(
-                "tool.result",
-                toolCallId=tool_call_id,
-                concurrencySafe=tool_name in concurrency_safe_tools,
-                result=trace_result,
+            is_confirmed_cancellation = (
+                isinstance(result.get("error"), dict)
+                and result["error"].get("code") == "CANCELLED"
             )
+            if allowed and (not deadline_expired.is_set() or is_confirmed_cancellation):
+                record(
+                    "tool.result",
+                    toolCallId=tool_call_id,
+                    concurrencySafe=tool_name in concurrency_safe_tools,
+                    result=trace_result,
+                )
         elif module == "permission":
             tool = call_payload.get("tool") if isinstance(call_payload.get("tool"), dict) else {}
             tool_name = str(tool.get("name") or "")
@@ -218,14 +253,17 @@ def main() -> int:
             fault = model_fault_at(scenario, attempt)
         elif module == "capability":
             tool_name = str(call_payload.get("name") or "")
-            record(
-                "tool.call",
-                name=tool_name,
-                toolCallId=call_payload.get("toolCallId"),
-                concurrencySafe=tool_name in concurrency_safe_tools,
-                arguments=call_payload.get("arguments") or {},
-            )
-            if not tool_cancel_scheduled.is_set() and int(limits.get("cancelAfterToolStartMs") or 0) > 0:
+            allowed = allowed_for(tool_name, call_payload)
+            record("permission.decision", toolName=tool_name, allowed=allowed)
+            if allowed:
+                record(
+                    "tool.call",
+                    name=tool_name,
+                    toolCallId=call_payload.get("toolCallId"),
+                    concurrencySafe=tool_name in concurrency_safe_tools,
+                    arguments=call_payload.get("arguments") or {},
+                )
+            if allowed and not tool_cancel_scheduled.is_set() and int(limits.get("cancelAfterToolStartMs") or 0) > 0:
                 tool_cancel_scheduled.set()
                 threading.Thread(target=cancel_after, args=(int(limits["cancelAfterToolStartMs"]),), daemon=True).start()
         elif module == "permission":

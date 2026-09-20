@@ -132,9 +132,9 @@ def test_client_maps_generic_agent_turn_success_to_staffdeck_result() -> None:
 
 def test_client_maps_action_budget_module_failure_to_action_budget_result() -> None:
     client = PilotDeckAgentLoopClient([sys.executable, "-u", "-c", _client_script(
-        '{"error":{"code":"ACTION_BUDGET_EXHAUSTED"}}',
+        '{"moduleFailure":{"code":"ACTION_BUDGET_EXHAUSTED","message":"StaffDeck action budget exhausted before the next model action."}}',
         outcome="failed",
-        code="ACTION_BUDGET_EXHAUSTED",
+        code="agent_model_error",
     )])
     result = client.execute(_requirement(), identity=_identity())
     client.close()
@@ -335,3 +335,112 @@ def test_client_decodes_staffdeck_structured_terminal_carrier(status: str, extra
     assert "__STAFFDECK_TASK_RESULT__=" not in result.reply_fragment
     checkpoint_messages = result.loop_checkpoint["agentLoopMessages"]
     assert "__STAFFDECK_TASK_RESULT__=" not in checkpoint_messages[0]["content"][0]["text"]
+
+
+def test_client_projects_sidecar_tool_history_into_staffdeck_result() -> None:
+    carrier = {
+        "action": "finish",
+        "status": "completed",
+        "reply_fragment": "done",
+    }
+    payload = {
+        "finalMessage": {"role": "assistant", "content": [{
+            "type": "text",
+            "text": (
+                "done"
+                "__STAFFDECK_TASK_RESULT__="
+                + json.dumps(carrier, separators=(",", ":"))
+                + "__END__"
+            ),
+        }]},
+        "messages": [
+            {"role": "user", "content": [{"type": "text", "text": "task"}]},
+            {"role": "assistant", "content": [{
+                "type": "tool_call",
+                "id": "call-lookup",
+                "name": "lookup",
+                "input": {"q": "collect"},
+            }]},
+            {"role": "user", "content": [{
+                "type": "tool_result",
+                "toolCallId": "call-lookup",
+                "raw": {
+                    "type": "success",
+                    "toolCallId": "call-lookup",
+                    "toolName": "lookup",
+                    "data": {"value": "found"},
+                },
+            }]},
+            {"role": "assistant", "content": [{"type": "text", "text": "done"}]},
+        ],
+    }
+
+    script = f'''
+import json, sys
+execute = None
+for line in sys.stdin:
+    msg = json.loads(line)
+    if msg.get("method") == "hello":
+        print(json.dumps({{"kind":"response","messageId":"hello-res","inReplyTo":msg["messageId"],"ok":True,"connectionGeneration":"test-connection"}}), flush=True)
+    elif msg.get("method") == "execute":
+        execute = msg
+        print(json.dumps({{"kind":"response","messageId":"accepted","inReplyTo":msg["messageId"],"requestId":msg["requestId"],"ok":True,"streamId":"stream-1","cursor":0}}), flush=True)
+        print(json.dumps({{"kind":"request","messageId":"module-call","method":"module_call","runId":msg["runId"],"operationId":msg["operationId"],"requestId":"module-request","module":"capability","payload":{{"name":"lookup","arguments":{{"q":"collect"}}}}}}), flush=True)
+    elif msg.get("kind") == "response" and msg.get("inReplyTo") == "module-call":
+        print(json.dumps({{"kind":"event","messageId":"final-1","eventType":"agent.execute.completed","streamId":"stream-1","sequence":0,"runId":execute["runId"],"operationId":execute["operationId"],"requestId":execute["requestId"],"final":True,"outcome":"completed","payload":{json.dumps(payload)}}}), flush=True)
+'''
+    client = PilotDeckAgentLoopClient([sys.executable, "-u", "-c", script])
+    result = client.execute(
+        _requirement(),
+        identity=_identity(),
+        bridge=lambda module, event: {
+            "type": "success",
+            "toolCallId": "call-lookup",
+            "toolName": event["name"],
+            "data": {"value": "found"},
+        },
+    )
+    client.close()
+
+    assert result.action_count == 2
+    assert result.capability_results == [{
+        "tool_name": "lookup",
+        "success": True,
+        "data": {"value": "found"},
+        "error": None,
+    }]
+
+
+def test_client_rejects_completed_carrier_without_required_capability() -> None:
+    carrier = {
+        "action": "finish",
+        "status": "completed",
+        "reply_fragment": "done",
+    }
+    payload = {
+        "messages": [{"role": "assistant", "content": [{
+            "type": "text",
+            "text": (
+                "__STAFFDECK_TASK_RESULT__="
+                + json.dumps(carrier, separators=(",", ":"))
+                + "__END__"
+            ),
+        }]}],
+    }
+    requirement = TaskRequirement(
+        task_frame_id="frame-1",
+        kind="sop",
+        goal="must call lookup",
+        required_capability_names=["lookup"],
+    )
+
+    client = PilotDeckAgentLoopClient([sys.executable, "-u", "-c", _client_script(json.dumps(payload))])
+    result = client.execute(requirement, identity=_identity())
+    client.close()
+
+    assert result.status == "action_budget"
+    assert result.reply_fragment == "当前任务已达到本轮自动执行上限，需要下一轮继续。"
+    assert result.error == {
+        "code": "ACTION_BUDGET_EXHAUSTED",
+        "message": "StaffDeck action budget exhausted.",
+    }

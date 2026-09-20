@@ -146,6 +146,49 @@ def test_oracle_uses_pair_specific_expectation_override() -> None:
     assert validate_trace_expectations(trace, scenario, "staffdeck") == []
 
 
+def test_oracle_reads_task_frame_fields_from_terminal_snapshot() -> None:
+    scenario = {
+        "scenarioId": "required-capability",
+        "q": "q",
+        "expected": {"requiredCapabilities": ["lookup"]},
+    }
+    trace = [{
+        "kind": "terminal",
+        "scenarioId": "required-capability",
+        "q": "q",
+        "sequence": 0,
+        "outcome": "completed",
+        "taskFrame": {"requiredCapabilities": ["lookup"]},
+    }]
+
+    assert validate_trace_expectations(trace, scenario, "staffdeck") == []
+
+
+def test_oracle_accepts_only_a_present_awaiting_input_payload() -> None:
+    scenario = {
+        "scenarioId": "awaiting-input",
+        "q": "q",
+        "expected": {"awaitingInput": True},
+    }
+    awaiting = [{
+        "kind": "terminal",
+        "scenarioId": "awaiting-input",
+        "q": "q",
+        "sequence": 0,
+        "session": {"awaitingInput": {"expected_fields": ["date"]}},
+    }]
+    missing = [{
+        "kind": "terminal",
+        "scenarioId": "awaiting-input",
+        "q": "q",
+        "sequence": 0,
+        "session": {"awaitingInput": None},
+    }]
+
+    assert validate_trace_expectations(awaiting, scenario, "staffdeck") == []
+    assert validate_trace_expectations(missing, scenario, "staffdeck")
+
+
 def test_known_gap_requires_exact_semantic_difference() -> None:
     runner = _load_runner()
     scenario = {
@@ -161,6 +204,23 @@ def test_known_gap_requires_exact_semantic_difference() -> None:
     assert runner._known_gap_matches(scenario, comparison.semantic)
     scenario["expectedDifferencePaths"] = ["trace[0].code"]
     assert not runner._known_gap_matches(scenario, comparison.semantic)
+
+
+def test_declared_semantic_difference_rejects_any_extra_path() -> None:
+    runner = _load_runner()
+    scenario = {
+        "declaredSemanticDifferencePaths": ["terminal.outcome", "terminal.stopReason"],
+    }
+    exact = [
+        _TRACE.Difference("trace[0].outcome", "failed", "result_unknown"),
+        _TRACE.Difference("trace[0].stopReason", "aborted_streaming", None),
+    ]
+
+    assert runner._declared_semantic_difference_matches(scenario, exact)
+    assert not runner._declared_semantic_difference_matches(
+        scenario,
+        [*exact, _TRACE.Difference("trace[0].output", "", "late output")],
+    )
 
 
 def test_semantic_projection_ignores_format_only_differences() -> None:
@@ -329,6 +389,52 @@ def test_mock_tool_returns_same_content_and_explicit_errors() -> None:
         process.wait(timeout=2)
 
 
+def test_mock_tool_deadline_prevents_side_effect_commit() -> None:
+    import subprocess
+    import time
+
+    process = subprocess.Popen(
+        [sys.executable, str(MOCK_PATH), "--port", "0"],
+        stdout=subprocess.PIPE,
+        text=True,
+    )
+    assert process.stdout is not None
+    ready = json.loads(process.stdout.readline())
+    run_key = "expired-tool-deadline"
+    connection = HTTPConnection("127.0.0.1", int(ready["port"]))
+    try:
+        connection.request(
+            "POST",
+            "/tools/execute",
+            body=json.dumps(
+                {
+                    "scenarioId": "deadline_during_tool",
+                    "name": "slow_side_effect",
+                    "arguments": {"q": "deadline"},
+                    "runKey": run_key,
+                    "operationDeadlineEpochMs": int(time.time() * 1000) - 1,
+                }
+            ),
+            headers={"Content-Type": "application/json"},
+        )
+        result = json.loads(connection.getresponse().read())
+        assert result["type"] == "error"
+        assert result["error"]["code"] == "CANCELLED"
+
+        connection.request(
+            "POST",
+            "/control/state",
+            body=json.dumps({"runKey": run_key}),
+            headers={"Content-Type": "application/json"},
+        )
+        state = json.loads(connection.getresponse().read())
+        assert state["sideEffects"] == {}
+    finally:
+        connection.close()
+        process.terminate()
+        process.wait(timeout=2)
+
+
 def test_pilotdeck_sidecar_adapter_builds_complete_ordered_messages() -> None:
     adapter = _load_pilotdeck_sidecar_adapter()
 
@@ -381,13 +487,13 @@ def test_pilotdeck_gateway_adapter_uses_real_host_and_preserves_terminal_semanti
     assert '"dist/src/gateway/client/GatewayWsClient.js"' in adapter
     assert 'clientName: "test-control"' in adapter
     assert "cancelAnchor" in adapter
-    assert "if (input.abortSignal?.aborted) continue" in adapter
-    assert "await input.onDurableMessage?.(durableMessage)" in adapter
+    assert "context.abortSignal?.addEventListener(\"abort\", forwardCancellation" in adapter
+    assert "if (!context.abortSignal?.aborted) throw error" in adapter
+    assert "productionSidecarEvidence.handshakeCompleted" in adapter
+    assert 'writeFile(`${traceOut}.proof.json`' in adapter
     assert 'process.env.PARITY_SERVE_ONLY === "1"' in adapter
-    assert 'module: "context"' not in adapter
-    assert 'message.module === "context"' in adapter
-    assert 'payload.operation === "execute_batch"' in adapter
-    assert "requiresPromptCapability(tool, {})" in adapter
+    assert 'PILOTDECK_AGENT_LOOP_TRANSPORT: mode === "sidecar" ? "stdio" : "native"' in adapter
+    assert "agentLoopTransportObserver" in adapter
 
 
 def test_staffdeck_adapter_environment_prefers_selected_checkout(tmp_path: Path) -> None:

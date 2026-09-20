@@ -190,6 +190,7 @@ class PilotDeckAgentLoopClient:
         cancel_sent = False
         cancel_observed_at: float | None = None
         read_poll_seconds = 0.25
+        executed_capability_results: list[dict[str, Any]] = []
         while True:
             remaining = self._remaining_timeout(started, deadline_monotonic)
             if remaining <= 0:
@@ -217,6 +218,9 @@ class PilotDeckAgentLoopClient:
                 raise
             if message.get("kind") == "request" and message.get("method") == "module_call":
                 response = self._dispatch_module_call(message, bridge)
+                capability_result = _capability_result_from_module_exchange(message, response)
+                if capability_result is not None:
+                    executed_capability_results.append(capability_result)
                 self._write(response)
                 continue
             if message.get("kind") == "error":
@@ -275,7 +279,16 @@ class PilotDeckAgentLoopClient:
                         result_unknown=True,
                     )
                 if outcome != "completed":
-                    if str(message.get("code") or "") == "ACTION_BUDGET_EXHAUSTED":
+                    module_failure = payload.get("moduleFailure") if isinstance(payload, dict) else None
+                    module_failure_code = (
+                        str(module_failure.get("code") or "")
+                        if isinstance(module_failure, dict)
+                        else ""
+                    )
+                    if (
+                        str(message.get("code") or "") == "ACTION_BUDGET_EXHAUSTED"
+                        or module_failure_code == "ACTION_BUDGET_EXHAUSTED"
+                    ):
                         return self._finalize_result(
                             TaskExecutionResult(
                                 task_frame_id=requirement.task_frame_id,
@@ -286,6 +299,8 @@ class PilotDeckAgentLoopClient:
                             ),
                             payload if isinstance(payload, dict) else {},
                             checkpoint,
+                            executed_capability_results,
+                            requirement.required_capability_names,
                         )
                     error = message.get("error")
                     detail = error.get("message") if isinstance(error, dict) else None
@@ -293,7 +308,14 @@ class PilotDeckAgentLoopClient:
                         str(message.get("code") or "EXECUTE_FAILED"),
                         str(detail or "PilotDeck AgentLoop execution failed."),
                     )
-                return self._result_from_payload(payload, message, requirement, checkpoint)
+                return self._result_from_payload(
+                    payload,
+                    message,
+                    requirement,
+                    checkpoint,
+                    executed_capability_results,
+                    requirement.required_capability_names,
+                )
 
     def _dispatch_module_call(
         self,
@@ -450,6 +472,8 @@ class PilotDeckAgentLoopClient:
         message: Mapping[str, Any],
         requirement: TaskRequirement,
         checkpoint: dict[str, Any] | None,
+        executed_capability_results: list[dict[str, Any]],
+        required_capability_names: list[str],
     ) -> TaskExecutionResult:
         outcome = str(message.get("outcome") or "failed")
         if outcome != "completed":
@@ -465,14 +489,32 @@ class PilotDeckAgentLoopClient:
                 carrier_text = _last_assistant_message_text(raw_payload.get("messages"))
             carrier_result, _ = _extract_staffdeck_result(carrier_text, requirement.task_frame_id)
             if carrier_result is not None:
-                return self._finalize_result(carrier_result, raw_payload, checkpoint)
+                return self._finalize_result(
+                    carrier_result,
+                    raw_payload,
+                    checkpoint,
+                    executed_capability_results,
+                    required_capability_names,
+                )
             try:
-                return self._finalize_result(TaskExecutionResult.model_validate(raw_result), raw_payload, checkpoint)
+                return self._finalize_result(
+                    TaskExecutionResult.model_validate(raw_result),
+                    raw_payload,
+                    checkpoint,
+                    executed_capability_results,
+                    required_capability_names,
+                )
             except (TypeError, ValueError):
                 text = _final_message_text(raw_payload) or _final_message_text(raw_result)
                 parsed = _parse_task_result_text(text, requirement.task_frame_id)
                 if parsed is not None:
-                    return self._finalize_result(parsed, raw_payload, checkpoint)
+                    return self._finalize_result(
+                        parsed,
+                        raw_payload,
+                        checkpoint,
+                        executed_capability_results,
+                        required_capability_names,
+                    )
                 agent_result = raw_result
                 if agent_result.get("type") == "success":
                     result = TaskExecutionResult(
@@ -482,7 +524,13 @@ class PilotDeckAgentLoopClient:
                         action_count=max(1, int(agent_result.get("turns") or 1)),
                         structured_result=agent_result.get("structuredOutput"),
                     )
-                    return self._finalize_result(result, raw_payload, checkpoint)
+                    return self._finalize_result(
+                        result,
+                        raw_payload,
+                        checkpoint,
+                        executed_capability_results,
+                        required_capability_names,
+                    )
         raise PilotDeckAgentLoopError(
             "INVALID_RESULT",
             "PilotDeck returned an invalid TaskExecutionResult.",
@@ -493,8 +541,39 @@ class PilotDeckAgentLoopClient:
         result: TaskExecutionResult,
         payload: Mapping[str, Any],
         checkpoint: dict[str, Any] | None,
+        executed_capability_results: list[dict[str, Any]],
+        required_capability_names: list[str],
     ) -> TaskExecutionResult:
         """Keep StaffDeck-owned checkpoint fields while adding a safe generic snapshot."""
+        if executed_capability_results:
+            result.capability_results = [
+                *result.capability_results,
+                *executed_capability_results,
+            ]
+            # The legacy harness charges each capability action and its
+            # terminal model decision.  Only count calls observed on this
+            # sidecar execution; inherited canonical history is not new work.
+            result.action_count = max(
+                result.action_count,
+                len(executed_capability_results) + 1,
+            )
+        successful_capabilities = {
+            str(item.get("tool_name") or "")
+            for item in result.capability_results
+            if item.get("success") is True
+        }
+        missing_required = [
+            name
+            for name in required_capability_names
+            if name not in successful_capabilities
+        ]
+        if result.status == "completed" and missing_required:
+            result.status = "action_budget"
+            result.reply_fragment = "当前任务已达到本轮自动执行上限，需要下一轮继续。"
+            result.error = {
+                "code": "ACTION_BUDGET_EXHAUSTED",
+                "message": "StaffDeck action budget exhausted.",
+            }
         merged = dict(checkpoint or {})
         messages = payload.get("messages")
         if isinstance(messages, list):
@@ -514,6 +593,31 @@ class PilotDeckAgentLoopClient:
     def _next_id(self, prefix: str) -> str:
         self._message_counter += 1
         return f"{prefix}-{self._message_counter}"
+
+
+def _capability_result_from_module_exchange(
+    request: Mapping[str, Any],
+    response: Mapping[str, Any],
+) -> dict[str, Any] | None:
+    """Persist only the capability invocation observed in this execution."""
+
+    if str(request.get("module") or "") != "capability" or response.get("ok") is not True:
+        return None
+    request_payload = request.get("payload")
+    response_payload = response.get("payload")
+    if not isinstance(request_payload, Mapping) or not isinstance(response_payload, Mapping):
+        return None
+    name = str(response_payload.get("toolName") or request_payload.get("name") or "").strip()
+    if not name:
+        return None
+    failure = response_payload.get("type") == "error"
+    raw_error = response_payload.get("error")
+    return {
+        "tool_name": name,
+        "success": not failure,
+        "data": response_payload.get("data"),
+        "error": dict(raw_error) if isinstance(raw_error, Mapping) else None,
+    }
 
 
 def _final_message_text(payload: Mapping[str, Any]) -> str:

@@ -20,7 +20,12 @@ let modelAttempt = 0;
 let eventId = 0;
 const trace = [];
 const push = (kind, extra = {}) => trace.push({ kind, scenarioId: scenario.scenarioId, q: scenario.q, sequence: sequence++, ...extra });
-const post = async (suffix, body) => (await fetch(`${mock}${suffix}`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ ...body, runKey }) })).json();
+const post = async (suffix, body, signal) => (await fetch(`${mock}${suffix}`, {
+  method: "POST",
+  headers: { "content-type": "application/json" },
+  body: JSON.stringify({ ...body, runKey }),
+  signal,
+})).json();
 const modelFaultAt = (attempt) => (scenario.faults?.model ?? []).find((fault) => (fault.at ?? 1) === attempt);
 const registry = new ToolRegistry();
 const limits = scenario.limits ?? {};
@@ -65,16 +70,32 @@ for (const name of scenario.tools ?? []) {
       if (limits.cancelAfterToolStartMs && !toolCancelTimer) {
         toolCancelTimer = setTimeout(() => cancelRun("parity_cancel"), limits.cancelAfterToolStartMs);
       }
-      const result = await post("/tools/execute", {
-        scenarioId: scenario.scenarioId,
-        q: scenario.q,
-        name,
-        arguments: input,
-        permissionAllowed: toolIsAllowed(name, input),
-        delays: scenario.delays,
-        toolDelays: scenario.toolDelays,
-        faults: scenario.faults,
-      });
+      let result;
+      try {
+        result = await post("/tools/execute", {
+          scenarioId: scenario.scenarioId,
+          q: scenario.q,
+          name,
+          arguments: input,
+          permissionAllowed: toolIsAllowed(name, input),
+          delays: scenario.delays,
+          toolDelays: scenario.toolDelays,
+          faults: scenario.faults,
+        }, context.abortSignal);
+      } catch (error) {
+        if (!context.abortSignal?.aborted) throw error;
+        const cancelledResult = {
+          type: "error",
+          toolName: name,
+          error: {
+            code: "CANCELLED",
+            message: "Deterministic tool cancellation.",
+            retryable: false,
+          },
+        };
+        push("tool.result", { result: cancelledResult, toolCallId, concurrencySafe });
+        return { content: [], data: {} };
+      }
       push("tool.result", { result, toolCallId, concurrencySafe });
       if (result.type === "error") throw Object.assign(new Error(result.error.message), { code: result.error.code });
       return { content: [{ type: "text", text: JSON.stringify(result.data) }], data: result.data };
@@ -84,8 +105,10 @@ for (const name of scenario.tools ?? []) {
 const router = {
   decide: async () => ({ provider: "parity", model: "deterministic", scenarioType: "default", isSubagent: false, orchestrating: false, resolvedFrom: "fallback", mutations: {} }),
   materializeRequest: (_decision, request) => request,
-  execute: async function* (_decision, request, signal) { yield* this.stream(request, signal); },
-  stream: async function* (request) {
+  execute: async function* (_decision, request, context) {
+    yield* this.stream(request, context?.abortSignal);
+  },
+  stream: async function* (request, signal) {
     modelAttempt += 1;
     const attempt = modelAttempt;
     push("model.request", { attempt, request });
@@ -115,7 +138,19 @@ const router = {
       push("model.error", { code: error.code, message: error.message, retryable, attempt });
       throw error;
     }
-    const result = await post("/v1/chat/completions", { scenarioId: scenario.scenarioId, q: scenario.q, messages: request.messages, delays: scenario.delays, faults: scenario.faults });
+    let result;
+    try {
+      result = await post("/v1/chat/completions", {
+        scenarioId: scenario.scenarioId,
+        q: scenario.q,
+        messages: request.messages,
+        delays: scenario.delays,
+        faults: scenario.faults,
+      }, signal);
+    } catch (error) {
+      if (signal?.aborted) return;
+      throw error;
+    }
     const message = result.choices[0].message;
     push("model.response", { attempt, response: message });
     yield { type: "message_start", role: "assistant" };
@@ -162,7 +197,10 @@ session = createAgentSession({
 const currentContent = hasCurrentUserMessage ? lastMessage.content : [{ type: "text", text: scenario.q }];
 const input = { type: "blocks", content: currentContent };
 const cancelTimer = limits.cancelAfterMs ? setTimeout(() => cancelRun("parity_cancel"), limits.cancelAfterMs) : undefined;
-const deadlineTimer = limits.deadlineMs ? setTimeout(() => { deadlineExceeded = true; session.abort("deadline_exceeded"); }, limits.deadlineMs) : undefined;
+const deadlineTimer = limits.deadlineMs ? setTimeout(() => {
+  deadlineExceeded = true;
+  cancelRun("deadline_exceeded");
+}, limits.deadlineMs) : undefined;
 try {
   for await (const event of session.submit(input, { turnId: "turn-parity", maxTurns: limits.maxTurns, permissionMode, permissionRules: permissionContext.rules })) {
     if (event.type === "turn_completed") push("terminal", { outcome: outcome(event.result.type, { cancelled, deadlineExceeded }), code: deadlineExceeded ? "DEADLINE_EXCEEDED" : event.result.errors?.[0]?.code, stopReason: event.result.stopReason, structuredResult: event.result.structuredOutput, output: textOf(event.result.finalMessage) });

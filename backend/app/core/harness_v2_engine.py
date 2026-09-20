@@ -2190,11 +2190,35 @@ def _pilotdeck_context_messages(
 
     if isinstance(prior_messages, list) and prior_messages:
         messages = [dict(item) for item in prior_messages if isinstance(item, dict)]
+        current_step_id = _requirement_step_id(requirement)
+        prior_step_ids = {
+            step_id
+            for item in messages
+            for task_frame_id, step_id in [_canonical_requirement_boundary(item)]
+            if task_frame_id == requirement.task_frame_id and step_id
+        }
+        # A completed SOP step becomes durable StaffDeck state and is compiled
+        # into the next TaskRequirement as prior_task_results.  Replaying its
+        # generic AgentLoop task boundary across a node boundary would expose
+        # the old capability contract and budget to the new step.  Its causal
+        # tool/result tail remains part of the current model-visible history.
+        if current_step_id and any(
+            step_id != current_step_id for step_id in prior_step_ids
+        ):
+            messages = [
+                item
+                for item in messages
+                if not (
+                    (task_frame_id := _canonical_requirement_boundary(item)[0])
+                    == requirement.task_frame_id
+                )
+            ]
         # A generic AgentLoop checkpoint may contain only the durable
         # assistant/tool tail. Keep the current TaskRequirement as the stable
         # task boundary when projecting that tail back into the next turn.
         has_task_boundary = any(
-            requirement.task_frame_id in json.dumps(item, ensure_ascii=False)
+            _canonical_requirement_boundary(item)
+            == (requirement.task_frame_id, current_step_id)
             for item in messages
         )
         if not has_task_boundary:
@@ -2224,6 +2248,51 @@ def _pilotdeck_context_messages(
             if projected is not None:
                 messages.append(projected)
     return messages
+
+
+def _requirement_step_id(requirement: Any) -> str:
+    if getattr(requirement, "kind", None) != "sop":
+        return ""
+    sop_context = getattr(requirement, "sop_context", None)
+    if not isinstance(sop_context, dict):
+        return ""
+    step = sop_context.get("step")
+    if not isinstance(step, dict):
+        return ""
+    return str(step.get("node_id") or step.get("step_id") or "").strip()
+
+
+def _canonical_requirement_boundary(item: Any) -> tuple[str, str]:
+    """Read the host-owned requirement boundary from a canonical message."""
+
+    if not isinstance(item, dict) or item.get("role") != "user":
+        return "", ""
+    content = item.get("content")
+    if not isinstance(content, list):
+        return "", ""
+    for part in content:
+        if not isinstance(part, dict) or part.get("type") != "text":
+            continue
+        text = part.get("text")
+        if not isinstance(text, str):
+            continue
+        try:
+            candidate = json.loads(text)
+        except (TypeError, ValueError):
+            continue
+        if not isinstance(candidate, dict):
+            continue
+        task_frame_id = str(candidate.get("task_frame_id") or "").strip()
+        sop_context = candidate.get("sop_context")
+        step = sop_context.get("step") if isinstance(sop_context, dict) else None
+        step_id = (
+            str(step.get("node_id") or step.get("step_id") or "").strip()
+            if isinstance(step, dict)
+            else ""
+        )
+        if task_frame_id:
+            return task_frame_id, step_id
+    return "", ""
 
 
 def _transcript_entry_to_canonical(entry: Any) -> dict[str, Any] | None:
