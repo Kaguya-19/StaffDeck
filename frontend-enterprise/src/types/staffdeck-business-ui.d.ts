@@ -29,3 +29,29 @@ declare module '@staffdeck/business-ui/SopVersionDetailDialog' {
   export type { StaffDeckSopVersion };
   export default SopVersionDetailDialog;
 }
+
+declare module '@staffdeck/business-ui/SkillsPageHost' {
+  import type { ComponentType, ReactNode } from 'react';
+  export type EnterpriseAuthUser = { id?: string; username?: string; tenant_id?: string; is_admin?: boolean };
+  export type SkillsPageHost = Record<string, any>;
+  export const SkillsPageHostProvider: ComponentType<{ value: SkillsPageHost; children: ReactNode }>;
+}
+
+declare module '@staffdeck/business-ui/SkillsPage' {
+  import type { ComponentType } from 'react';
+  const SkillsPage: ComponentType<{ currentUser?: import('../auth').EnterpriseAuthUser; onLogout?: () => void }>;
+  export default SkillsPage;
+}
+
+declare module '@staffdeck/business-ui/KnowledgePageHost' {
+  import type { ComponentType, ReactNode } from 'react';
+  export type Host = Record<string, any>;
+  export const KnowledgePageHostProvider: ComponentType<{ value: Host; children: ReactNode }>;
+}
+
+declare module '@staffdeck/business-ui/KnowledgePage' {
+  import type { ComponentType } from 'react';
+  const KnowledgePage: ComponentType<{ currentUser?: import('../auth').EnterpriseAuthUser; onLogout?: () => void }>;
+  export const KnowledgeAddPage: ComponentType<{ currentUser?: import('../auth').EnterpriseAuthUser }>;
+  export default KnowledgePage;
+}
