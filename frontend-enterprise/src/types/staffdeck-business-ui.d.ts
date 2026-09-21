@@ -55,3 +55,20 @@ declare module '@staffdeck/business-ui/KnowledgePage' {
   export const KnowledgeAddPage: ComponentType<{ currentUser?: import('../auth').EnterpriseAuthUser }>;
   export default KnowledgePage;
 }
+
+declare module '@staffdeck/business-ui/DistillPageHost' {
+  import type { ComponentType, ReactNode } from 'react';
+  export type DistillPageHost = Record<string, any>;
+  export const DistillPageHostProvider: ComponentType<{ value: DistillPageHost; children: ReactNode }>;
+}
+
+declare module '@staffdeck/business-ui/DistillPage' {
+  import type { ComponentType } from 'react';
+  export type DistillPageProps = { active?: boolean; searchParamsOverride?: URLSearchParams; currentUser?: import('../auth').EnterpriseAuthUser; onLogout?: () => void };
+  const DistillPage: ComponentType<DistillPageProps>;
+  export function handoffAssigneeUserOptions(users: Array<Record<string, any>>): Array<{ value: string; label: string }>;
+  export function applyNodeTypeChange(...args: any[]): any;
+  export function filterActionOptionsForNodeType(...args: any[]): any;
+  export function EditableCapabilityReferencesLine(...args: any[]): any;
+  export default DistillPage;
+}

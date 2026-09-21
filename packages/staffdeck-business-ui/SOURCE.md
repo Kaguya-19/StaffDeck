@@ -1,12 +1,17 @@
 # Source Map
 
-`KnowledgePage.tsx` and `SkillsPage.tsx` are copied from the corresponding
+`KnowledgePage.tsx`, `SkillsPage.tsx`, and `DistillPage.tsx` are copied from the corresponding
 formal pages in `frontend-enterprise/src/pages` on the portable StaffDeck
 baseline. Their list, filter, CRUD, import, job, version/lifecycle, graph,
 discovery, search/citation, publish, rollback, and detail interactions remain
 in the shared source. The deliberate extraction boundary is the host bridge:
 transport, auth/scope, navigation, notifications, icons, UI primitives, and
 small formatting helpers are injected by each host.
+
+The Distill editor additionally keeps the source-view and flow-view editing
+surfaces in the shared package. Hosts provide the API and streaming hooks;
+portable hosts may return an explicit unavailable error for AI generation while
+still supporting local definition read, save, and reload.
 
 `SopVersionDetailDialog.tsx` remains a separately exported renderer extracted
 from the Skills page's `VersionDetailDialog` function. The source interaction
@@ -20,5 +25,6 @@ formatting helpers are supplied by the adapter. No replacement workbench or
 second business workflow is implemented in the package.
 
 PilotDeck consumes the checked-in release snapshot under
-`ui/src/composition/modules/staffdeck/vendor/` for the Knowledge and Skills
-pages, their host bridges, the graph renderer, and the version-detail dialog.
+`ui/src/composition/modules/staffdeck/vendor/` for the Knowledge, Skills, and
+Distill pages, their host bridges, the graph renderer, and the version-detail
+dialog.
