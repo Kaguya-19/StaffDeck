@@ -5,11 +5,9 @@ are consumed by both StaffDeck and PilotDeck. It owns business interaction and
 rendering while each host supplies an adapter for transport, auth context,
 notifications, navigation, and localized labels.
 
-The package currently exports the Knowledge graph and lifecycle/structure
-operations plus SOP draft management. The PilotDeck build vendors the exact
-`0.1.0` release under its composition module tree; it does not import a
-StaffDeck checkout or maintain a second implementation.
-
-The package deliberately exposes public operation clients rather than either
-host's private stores or routes. Enterprise and PilotDeck adapters therefore
-remain independently buildable and independently deployable.
+The package currently exports the original Knowledge graph slice and the
+original StaffDeck SOP version-detail dialog slice. The full Knowledge and SOP
+pages remain owned by StaffDeck until their original formal UI and state can
+be extracted without replacing them with a new workbench. PilotDeck vendors
+the exact `0.1.0` release under its composition module tree; it does not
+import a StaffDeck checkout or maintain a second implementation.

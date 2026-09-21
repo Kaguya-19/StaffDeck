@@ -13,6 +13,9 @@ export default defineConfig(({ mode }) => {
       alias: {
         '@': path.resolve(__dirname, './src'),
         '@staffdeck/business-ui': path.resolve(__dirname, '../packages/staffdeck-business-ui/src'),
+        react: path.resolve(__dirname, './node_modules/react'),
+        'react-dom': path.resolve(__dirname, './node_modules/react-dom'),
+        'lucide-react': path.resolve(__dirname, './node_modules/lucide-react'),
       },
     },
     base: '/',

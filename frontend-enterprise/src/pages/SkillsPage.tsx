@@ -33,6 +33,7 @@ import {
 } from '@/lib/enterprise-ui';
 import { DetailField } from '@/components/DetailField';
 import { ResourceImportDialog } from '@/components/ResourceImportDialog';
+import SopVersionDetailDialog from '@staffdeck/business-ui/SopVersionDetailDialog';
 
 import { api, TENANT_ID } from '../api/client';
 import IconAdd from '../assets/icons/add.svg?react';
@@ -830,7 +831,7 @@ export default function SkillsPage({
         }}
       />
 
-      <VersionDetailDialog detail={detailVersion} onClose={() => setDetailVersion(null)} />
+      <SopVersionDetailDialog detail={detailVersion} onClose={() => setDetailVersion(null)} />
 
       <ConfirmDialog
         open={Boolean(deleteTarget)}
@@ -1164,48 +1165,6 @@ function VersionsDialog({
             />
           </div>
         </div>
-      </DialogContent>
-    </Dialog>
-  );
-}
-
-function VersionDetailDialog({
-  detail,
-  onClose,
-}: {
-  detail: SkillVersionRead | null;
-  onClose: () => void;
-}) {
-  return (
-    <Dialog open={Boolean(detail)} onOpenChange={(next) => !next && onClose()}>
-      <DialogContent
-        aria-describedby={undefined}
-        className="flex max-h-[calc(100dvh-4rem)] w-[calc(100%-2rem)] flex-col gap-[16px] overflow-hidden rounded-[14px] px-[20px] py-[16px] sm:max-w-[900px]"
-      >
-        <div className="flex items-center gap-[6px] px-[12px] text-[#757f9c]">
-          <IconSkill className="size-[14px] shrink-0" />
-          <DialogTitle className="min-w-0 truncate text-[14px] font-normal leading-none text-[#757f9c]">
-            {detail ? `版本详情：${detail.name} / ${detail.version}` : '版本详情'}
-          </DialogTitle>
-        </div>
-
-        {detail && (
-          <div className="flex min-h-0 flex-1 flex-col gap-[16px] overflow-y-auto px-[12px]">
-            <div className="grid grid-cols-2 gap-[10px] max-[520px]:grid-cols-1">
-              {/* <DetailField label="SOP ID">{detail.skill_id}</DetailField> */}
-              <DetailField label="版本">{detail.version}</DetailField>
-              <DetailField label="业务域">{detail.business_domain || '-'}</DetailField>
-              <DetailField label="状态">{statusText(detail.status)}</DetailField>
-              <DetailField label="调用次数">{detail.call_count || 0} 次</DetailField>
-              <DetailField label="好评率">{percent(detail.positive_rate)}</DetailField>
-              <DetailField label="差评率">{percent(detail.negative_rate)}</DetailField>
-              <DetailField label="更新时间">{detail.updated_at.slice(0, 10)}</DetailField>
-            </div>
-            <pre className="overflow-x-auto rounded-[12px] bg-[#f6f6f6] p-[14px] text-[12px] leading-[1.7] text-[#464c5e] wrap-anywhere whitespace-pre-wrap">
-              {skillSourceText(detail)}
-            </pre>
-          </div>
-        )}
       </DialogContent>
     </Dialog>
   );
