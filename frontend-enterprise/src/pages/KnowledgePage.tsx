@@ -32,7 +32,7 @@ import {
 } from '@/components/CapabilityScopeControl';
 import { ConfirmDialog } from '@/components/ConfirmDialog';
 import { DataTable, type DataTableColumn } from '@/components/DataTable';
-import KnowledgeGraphCanvas from '@/components/KnowledgeGraphCanvas';
+import KnowledgeGraphCanvas from '@staffdeck/business-ui/KnowledgeGraphCanvas';
 import { ModelConfigDropdown } from '@/components/ModelConfigDropdown';
 import { Paginator } from '@/components/Paginator';
 import { ResourceImportDialog } from '@/components/ResourceImportDialog';

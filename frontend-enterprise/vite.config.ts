@@ -12,6 +12,7 @@ export default defineConfig(({ mode }) => {
     resolve: {
       alias: {
         '@': path.resolve(__dirname, './src'),
+        '@staffdeck/business-ui': path.resolve(__dirname, '../packages/staffdeck-business-ui/src'),
       },
     },
     base: '/',
