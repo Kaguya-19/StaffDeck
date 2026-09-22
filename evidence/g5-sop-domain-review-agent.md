@@ -51,12 +51,17 @@ runtime event was fabricated by this task.
 
 ## G5 Version Lineage
 
-The StaffDeck shared editor saved and reloaded the separate local branch
+The StaffDeck shared editor first showed the separate local branch
 `project_delivery_plan@1.1.0`, containing 2 nodes and 1 edge
-(`n1_collect -> n2_plan`). That branch is not the definition used by the new
-real run. The management adapter's explicit publish/get-version response used
-by PilotDeck is `project_delivery_plan@1.0.2`, containing 4 nodes and 4 edges,
-including the `confirm_scope` handoff and `finalize_plan` terminal path. The
-PilotDeck shared editor independently saved the same 4-node/4-edge topology at
-UI version `1.1.0`; only the management-published `1.0.2` response was bound
-into the run bundle. The run output records that exact ID/version and topology.
+(`n1_collect -> n2_plan`). For the primary chain, the page was then edited to
+4 nodes and 4 edges, saved through its save-version dialog as local `1.2.0`,
+reloaded, and published through the page's normal “发布到广场” confirmation.
+The publish response and subsequent version-management GET returned active
+`project_delivery_plan@1.2.0` with the page-authored graph:
+`n1_collect -> build_plan`, `build_plan -> confirm_scope/finalize_plan`, and
+`confirm_scope -> finalize_plan`.
+
+PilotDeck's shared editor independently retained the same 4-node/4-edge
+authoring topology at UI version `1.1.0`. The primary run consumed the
+StaffDeck page-published `1.2.0` response directly; the earlier management-only
+`1.0.2` run is supplemental and not used to bridge this UI chain.
