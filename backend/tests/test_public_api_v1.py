@@ -512,6 +512,13 @@ def test_sop_changes_remain_isolated_until_publish(monkeypatch) -> None:
         assert db.exec(select(Skill).where(Skill.skill_id == "expense_policy_v1")).first() is not None
         assert db.get(APISOPDraft, draft["id"]).status == "published"
 
+    listed = client.get(
+        "/agents/agent_api/sops",
+        headers={"Authorization": f"Bearer {key}"},
+    )
+    assert listed.status_code == 200, listed.text
+    assert listed.json()["data"][0]["skill_id"] == "expense_policy_v1"
+
 
 def test_rfc6902_supports_array_append_move_copy_and_test() -> None:
     source = {"nodes": [{"id": "a"}], "meta": {"owner": "x"}}

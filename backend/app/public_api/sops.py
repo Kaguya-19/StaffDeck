@@ -246,6 +246,11 @@ def list_sops(
             APISOPDraft.agent_id == agent_id,
         ).order_by(APISOPDraft.updated_at.desc())
     ).all()
+    # Agent-scoped visibility may create or normalize a branch projection. Commit
+    # that intentional read-side projection before the audit middleware opens its
+    # own database session, otherwise SQLite can hold the write lock until the
+    # request dependency is torn down and the response body never flushes.
+    db.commit()
     return {
         "data": [item.model_dump(mode="json", exclude={"tenant_id"}) for item in published],
         "drafts": [_draft_payload(row) for row in drafts],
