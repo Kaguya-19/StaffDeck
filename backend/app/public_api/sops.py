@@ -8,7 +8,7 @@ from pydantic import ValidationError
 from sqlmodel import Session, select
 
 from app.api import skills as internal_skills
-from app.agents.branching import visible_skill_rows
+from app.agents.branching import visible_published_skills, visible_skill_rows, model_for_agent
 from app.db import get_session
 from app.db.models import (
     APIJob,
@@ -17,6 +17,7 @@ from app.db.models import (
     GeneralSkill,
     KnowledgeBase,
     Skill,
+    ChatSession,
     Tool,
     utc_now,
 )
@@ -30,6 +31,7 @@ from app.public_api.schemas import (
     SOPPublishRequest,
     SOPRewritePublicRequest,
     SOPStructuredCreate,
+    SOPRouteRequest,
 )
 from app.public_api.sessions import ensure_public_agent
 from app.public_api.utils import etag_for
@@ -42,7 +44,8 @@ from app.skills.skill_schema import (
     SkillUpdateRequest,
     skill_card_from_persisted,
 )
-from app.skills.nesting import SopNestingError, validate_sop_nesting
+from app.skills.nesting import SopNestingError, discoverable_sops, expand_visible_sops, validate_sop_nesting
+from app.core.turn_planner import TurnPlanner
 
 
 router = APIRouter(tags=["sops"])
@@ -50,6 +53,23 @@ router = APIRouter(tags=["sops"])
 
 def _draft_etag(content: dict[str, Any]) -> str:
     return etag_for(content)
+
+
+def _routing_skill_snapshot(skill: Skill) -> Skill:
+    """Detach visible DB rows before nesting expansion mutates a routing copy."""
+    return Skill(
+        id=skill.id,
+        tenant_id=skill.tenant_id,
+        skill_id=skill.skill_id,
+        version=skill.version,
+        name=skill.name,
+        business_domain=skill.business_domain,
+        description=skill.description,
+        content_json=deepcopy(skill.content_json or {}),
+        status=skill.status,
+        created_at=skill.created_at,
+        updated_at=skill.updated_at,
+    )
 
 
 def _draft_payload(row: APISOPDraft) -> dict[str, Any]:
@@ -255,6 +275,66 @@ def list_sops(
         "data": [item.model_dump(mode="json", exclude={"tenant_id"}) for item in published],
         "drafts": [_draft_payload(row) for row in drafts],
         "next_cursor": None,
+    }
+
+
+@router.post("/agents/{agent_id}/sops:route", response_model=dict)
+def route_sop(
+    agent_id: str,
+    body: SOPRouteRequest,
+    principal: PublicPrincipal = Depends(require_scopes("sops:read")),
+    db: Session = Depends(get_session),
+) -> dict:
+    """Select a routable SOP using StaffDeck's native router and visibility rules."""
+    enforce_agent_access(principal, agent_id)
+    ensure_public_agent(db, principal, agent_id)
+    published = [
+        _routing_skill_snapshot(skill)
+        for skill in visible_published_skills(db, principal.tenant_id, agent_id)
+    ]
+    routing_skills = discoverable_sops(expand_visible_sops(published))
+    db.commit()
+    model_config = model_for_agent(db, principal.tenant_id, agent_id)
+    if model_config is None:
+        raise PublicAPIError(409, "MODEL_NOT_CONFIGURED", "No enabled default model is configured.")
+    session = ChatSession(
+        id=body.session_id or f"route:{agent_id}",
+        tenant_id=principal.tenant_id,
+        user_id=principal.actor_user.id,
+        agent_id=agent_id,
+        active_skill_id=body.active_sop_id,
+        active_step_id=body.active_step_id,
+        slots_json=dict(body.slots),
+        pending_tasks_json=list(body.pending_tasks),
+        awaiting_input_json=dict(body.awaiting_input) if body.awaiting_input else None,
+        status="active",
+    )
+    plan = TurnPlanner().plan(
+        body.message,
+        session,
+        routing_skills,
+        model_config,
+        body.conversation_context,
+        None,
+        [],
+    )
+    selected_frame = next(
+        (
+            frame
+            for frame in plan.task_frames
+            if frame.kind == "sop" and frame.target_skill_id
+        ),
+        None,
+    )
+    return {
+        "decision": plan.decision,
+        "selected_sop_id": selected_frame.target_skill_id if selected_frame else None,
+        "target_step_id": selected_frame.target_step_id if selected_frame else None,
+        "confidence": plan.confidence,
+        "user_intent": plan.user_intent,
+        "reason": plan.reason,
+        "clarification_question": plan.clarification_question,
+        "candidate_sop_ids": [skill.skill_id for skill in routing_skills],
     }
 
 

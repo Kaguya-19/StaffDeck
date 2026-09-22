@@ -181,6 +181,17 @@ class SOPPublishRequest(BaseModel):
     draft_id: str
 
 
+class SOPRouteRequest(BaseModel):
+    message: str = Field(min_length=1)
+    session_id: str | None = Field(default=None, max_length=200)
+    active_sop_id: str | None = Field(default=None, max_length=200)
+    active_step_id: str | None = Field(default=None, max_length=200)
+    slots: dict[str, Any] = Field(default_factory=dict)
+    pending_tasks: list[dict[str, Any]] = Field(default_factory=list)
+    awaiting_input: dict[str, Any] | None = None
+    conversation_context: dict[str, Any] | None = None
+
+
 class KnowledgeEntry(BaseModel):
     external_id: str | None = None
     title: str = Field(min_length=1)
