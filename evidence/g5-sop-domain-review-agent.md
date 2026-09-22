@@ -38,6 +38,13 @@ Result: **BLOCKED by environment**. The isolated uv environment installed the
 declared package and pytest, but the pytest process exited with code 139 before
 reporting test results. No test result is counted as PASS.
 
+Diagnosis: `PYTHONFAULTHANDLER=1 uv run pytest -vv -s
+tests/test_imported_sop_read.py` consistently faults inside pytest's macOS
+capture initialization (`_pytest/capture.py:_readline_workaround`), while the
+same environment imports `app.public_api.sops` and reports SQLite `3.45.1`
+successfully. This is a test-runner/native capture failure, not a claimed SOP
+behavior result.
+
 The existing tracked SOP/runtime tests remain the intended rerun set after the
 host's Python/SQLAlchemy native runtime is repaired. No database, status, or
 runtime event was fabricated by this task.
