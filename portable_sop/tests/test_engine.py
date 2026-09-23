@@ -157,6 +157,57 @@ def test_submit_can_wait_for_user_without_all_required_slots():
     assert advanced["state"]["active_step_id"] == "done"
 
 
+def test_waiting_status_cannot_advance_to_another_step():
+    state = prepare(BUNDLE, {"selected_skill_id": "onboard"})["state"]
+
+    with pytest.raises(SopRuntimeError) as error:
+        submit(
+            BUNDLE,
+            state,
+            {"status": "awaiting_user", "replyFragment": "What is your name?", "nextStepId": "done"},
+        )
+
+    assert error.value.code == "WAIT_STATUS_CANNOT_ADVANCE"
+
+
+def test_handoff_step_rejects_awaiting_user_and_requires_handoff_status():
+    bundle = {
+        "sops": [{
+            "id": "handoff",
+            "content": {
+                "start_node_id": "approval",
+                "nodes": [{"node_id": "approval", "type": "handoff", "allowed_actions": ["handoff_human"]}],
+                "terminal_node_ids": ["approval"],
+            },
+        }],
+    }
+    state = prepare(bundle, {"selected_skill_id": "handoff"})["state"]
+
+    with pytest.raises(SopRuntimeError) as error:
+        submit(bundle, state, {"status": "awaiting_user", "replyFragment": "Please confirm."})
+
+    assert error.value.code == "HANDOFF_REQUIRED"
+
+
+def test_response_step_without_missing_fields_rejects_awaiting_user():
+    bundle = {
+        "sops": [{
+            "id": "response",
+            "content": {
+                "start_node_id": "answer",
+                "nodes": [{"node_id": "answer", "type": "response", "allowed_actions": ["answer_user"]}],
+                "terminal_node_ids": ["answer"],
+            },
+        }],
+    }
+    state = prepare(bundle, {"selected_skill_id": "response"})["state"]
+
+    with pytest.raises(SopRuntimeError) as error:
+        submit(bundle, state, {"status": "awaiting_user", "replyFragment": "Please confirm."})
+
+    assert error.value.code == "WAIT_INPUT_NOT_REQUIRED"
+
+
 def test_submit_rejects_undeclared_handoff():
     state = prepare(BUNDLE, {"selected_skill_id": "onboard"})["state"]
 

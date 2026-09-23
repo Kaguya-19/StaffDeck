@@ -61,6 +61,25 @@ def submit(
     reply = _text(proposal.get("replyFragment"))
     if not reply:
         raise SopRuntimeError("REPLY_REQUIRED", "SOP results require a replyFragment.")
+    next_step_id = _text(proposal.get("nextStepId")) or _text(proposal.get("next_step_id")) or None
+    if status in {"awaiting_user", "handoff", "blocked", "waiting_external_task"} and next_step_id:
+        raise SopRuntimeError(
+            "WAIT_STATUS_CANNOT_ADVANCE",
+            "A resumable or waiting SOP result must not select a next step.",
+            {"status": status, "next_step_id": next_step_id, "active_step_id": session.active_step_id},
+        )
+    if status == "awaiting_user" and _step_requires_handoff(step):
+        raise SopRuntimeError(
+            "HANDOFF_REQUIRED",
+            "The active SOP step declares a human handoff; use status handoff instead of awaiting_user.",
+            {"active_step_id": session.active_step_id, "allowed_actions": GraphRules.step_actions(step)},
+        )
+    if status == "awaiting_user" and not _step_has_missing_user_info(step, session):
+        raise SopRuntimeError(
+            "WAIT_INPUT_NOT_REQUIRED",
+            "The active SOP step has no missing user information; use completed or handoff according to the step.",
+            {"active_step_id": session.active_step_id, "status": status},
+        )
 
     # The native coordinator reactivates a session when a user answer resumes
     # an awaiting SOP. PilotDeck submits that answer through this boundary, so
@@ -73,7 +92,7 @@ def submit(
         status=status,
         reply_fragment=reply,
         slot_updates=_mapping(proposal.get("slotUpdates")),
-        next_step_id=_text(proposal.get("nextStepId")) or _text(proposal.get("next_step_id")) or None,
+        next_step_id=next_step_id,
         task_summary=_text(proposal.get("taskSummary")),
         structured_result=deepcopy(proposal.get("structuredResult")),
         capability_results=[{"tool_name": name, "success": True} for name in successful_tool_names if _text(name)],
@@ -250,6 +269,15 @@ def _requirement(step: dict[str, Any], session: ChatSession) -> TaskRequirement:
         expected_slots=expected, required_slots=expected, known_slots=dict(session.slots_json or {}),
         required_capability_names=required_tools,
     )
+
+
+def _step_requires_handoff(step: dict[str, Any]) -> bool:
+    return str(step.get("type") or "").strip() == "handoff" or "handoff_human" in GraphRules.step_actions(step)
+
+
+def _step_has_missing_user_info(step: dict[str, Any], session: ChatSession) -> bool:
+    slots = session.slots_json or {}
+    return any(not GraphRules.slot_satisfied(slots, str(field)) for field in step.get("expected_user_info", []) if str(field).strip())
 
 
 def _wire_state(session: ChatSession, prior: dict[str, Any]) -> dict[str, Any]:
