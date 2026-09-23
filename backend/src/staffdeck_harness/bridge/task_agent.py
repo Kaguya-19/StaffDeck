@@ -227,6 +227,25 @@ def _step_prompt(requirement: TaskRequirement, state: PipelineState, decision_co
         text = str(c.get("text") or "").strip()
         if text:
             parts.append(text)
+    if requirement.kind == "sop":
+        step = (requirement.sop_context or {}).get("step")
+        if isinstance(step, dict):
+            # Keep the model-facing description tied to the published node contract.  In
+            # particular, a handoff node must not be mistaken for an ordinary user question.
+            node = {
+                key: step.get(key)
+                for key in ("node_id", "step_id", "type", "name", "instruction", "allowed_actions", "expected_user_info")
+                if step.get(key) not in (None, "", [], {})
+            }
+            if node:
+                parts.append("# 当前 SOP 节点\n" + json.dumps(node, ensure_ascii=False, indent=1))
+            actions = {str(value).strip() for value in (step.get("allowed_actions") or [])}
+            if step.get("type") == "handoff" or "handoff_human" in actions:
+                parts.append(
+                    "当前节点声明了人工交接动作（handoff_human）。需要负责人或人工确认时，"
+                    "必须调用 mcp__staffdeck__submit_step_result 并提交 status=\"handoff\"，"
+                    "不要用 status=\"awaiting_user\" 代替；调用后停止生成。"
+                )
     task = {
         "current_time": requirement.current_time,
         "goal": requirement.goal,
@@ -795,10 +814,13 @@ class HarnessV3TaskAgent:
                 raise TimeoutError("SOP step deadline expired")
             return False
 
+        if finished is None:
+            finished = lambda: self._execution_host.capabilities.slot.finish is not None
         return run_session(proc, session_id, content_blocks, check, trace,
                            tenant_id=self.turn.tenant_id, host_session_id=self.turn.session_id,
                            timeout_seconds=self.runtime.worker_config.request_timeout_seconds or 600,
-                           on_event=self._execution_host.observe_engine_event)
+                           on_event=self._execution_host.observe_engine_event,
+                           finished=finished)
 
     def _result(self, requirement: TaskRequirement, slot: ActivationSlot, state: PipelineState, final_text: str, finish_reason: str | None, actions: int, artifacts: list[dict[str, Any]], events: list[dict[str, Any]]) -> TaskExecutionResult:
         from app.core.harness_agent import HarnessAction, finish_execution_result

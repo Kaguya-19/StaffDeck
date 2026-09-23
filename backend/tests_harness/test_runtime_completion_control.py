@@ -37,6 +37,23 @@ def test_completion_requires_successful_node_capabilities_before_closing(db):
     assert result.success and cap.slot.closed
 
 
+def test_handoff_control_is_an_accepted_sop_completion(db):
+    cap = _host(db, CompositionCompiler(hooks=()).compile(_staff()))
+    execution = ExecutionHost(
+        cap,
+        TaskRequirement(task_frame_id="tf1", kind="sop", goal="confirm", allowed_transitions=[]),
+    )
+
+    result, _ = execution.invoke_proxy(
+        "submit_step_result",
+        {"status": "handoff", "reply_fragment": "请负责人确认范围变更。"},
+        _ctx(),
+    )
+
+    assert result.success and cap.slot.closed
+    assert cap.slot.finish["status"] == "handoff"
+
+
 def test_control_cannot_select_an_unlisted_transition(db):
     cap = _host(db, CompositionCompiler(hooks=()).compile(_staff()))
     execution = ExecutionHost(cap, TaskRequirement(task_frame_id="tf1", kind="sop", goal="flow"))
@@ -46,6 +63,43 @@ def test_control_cannot_select_an_unlisted_transition(db):
         _ctx(),
     )
     assert result.error["code"] == "INVALID_TRANSITION" and not cap.slot.closed
+
+
+def test_sop_prompt_preserves_native_handoff_node_contract():
+    from staffdeck_harness.bridge.task_agent import _step_prompt
+
+    req = TaskRequirement(
+        task_frame_id="tf1",
+        kind="sop",
+        goal="确认范围变更",
+        sop_context={
+            "skill_id": "project_delivery_plan",
+            "step": {
+                "node_id": "confirm_scope",
+                "type": "handoff",
+                "name": "确认范围变更",
+                "instruction": "范围发生变化时，请负责人确认影响与后续安排。",
+                "allowed_actions": ["handoff_human"],
+            },
+        },
+    )
+
+    prompt = _step_prompt(req, None, [], "")
+
+    assert '"type": "handoff"' in prompt
+    assert '"handoff_human"' in prompt
+    assert 'status="handoff"' in prompt
+    assert 'status="awaiting_user"' in prompt
+
+    ordinary = req.model_copy(
+        update={
+            "sop_context": {
+                "skill_id": "project_delivery_plan",
+                "step": {"node_id": "build_plan", "type": "response", "allowed_actions": ["answer_user"]},
+            }
+        }
+    )
+    assert "当前节点声明了人工交接动作" not in _step_prompt(ordinary, None, [], "")
 
 
 def test_completed_control_cannot_erase_an_already_filled_required_slot(db):

@@ -10,6 +10,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+from queue import Queue
 from types import SimpleNamespace
 
 import pytest
@@ -245,3 +246,129 @@ def test_phase_runner_surfaces_engine_turn_error_instead_of_empty_output(monkeyp
     assert "Connection error. (SERVER)" in str(exc.value)
     assert isinstance(reg.get("tok").host, IdlePhaseHost), "the token is parked again even on failure"
     assert traces == ["harness_v3_plan_started", "harness_v3_plan_finished"]
+
+
+def test_session_runner_stops_after_finished_control_without_idle(monkeypatch):
+    from deepseek_harness import api as harness_api
+    from staffdeck_harness.bridge import session_runner
+
+    class Subscription:
+        def __init__(self):
+            self._notifications = Queue()
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_):
+            return False
+
+    class Client:
+        def __init__(self, subscription):
+            self.subscription = subscription
+
+        def subscribe_session_notifications(self, _session_id):
+            return self.subscription
+
+        def session_prompt(self, _session_id, _content_blocks, *, notification_subscription):
+            assert notification_subscription is self.subscription
+            return "message-1"
+
+    subscription = Subscription()
+    subscription._notifications.put(SimpleNamespace(
+        method="session.event",
+        payload={"sessionId": "engine-session", "event": {
+            "type": "agent/inbox/spliced", "data": {"inserted": [{"id": "message-1"}]}
+        }},
+    ))
+    subscription._notifications.put(SimpleNamespace(
+        method="session.event",
+        payload={"sessionId": "engine-session", "event": {"type": "tool/result", "data": {}}},
+    ))
+    proc = SimpleNamespace(client=Client(subscription), closed=False)
+    proc.close = lambda: setattr(proc, "closed", True)
+    monkeypatch.setattr(harness_api, "final_response", lambda _events: "accepted result")
+    monkeypatch.setattr(harness_api, "finish_reason", lambda _events: "tool_calls")
+
+    events, reply, reason = session_runner.run_session(
+        proc,
+        "engine-session",
+        [{"type": "text", "text": "step"}],
+        cancelled=lambda: False,
+        trace=lambda *_: None,
+        tenant_id="tenant",
+        host_session_id="host-session",
+        timeout_seconds=0.5,
+        finished=lambda: True,
+    )
+
+    assert [event["type"] for event in events] == ["tool/result"]
+    assert (reply, reason) == ("accepted result", "tool_calls")
+    assert proc.closed is True, "a finished control result must not return a busy worker to the pool"
+
+
+def test_session_runner_keeps_events_before_control_acceptance(monkeypatch):
+    from deepseek_harness import api as harness_api
+    from staffdeck_harness.bridge import session_runner
+
+    class Subscription:
+        def __init__(self):
+            self._notifications = Queue()
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_):
+            return False
+
+    class Client:
+        def __init__(self, subscription):
+            self.subscription = subscription
+
+        def subscribe_session_notifications(self, _session_id):
+            return self.subscription
+
+        def session_prompt(self, _session_id, _content_blocks, *, notification_subscription):
+            return "message-2"
+
+    subscription = Subscription()
+    subscription._notifications.put(SimpleNamespace(
+        method="session.event",
+        payload={"sessionId": "engine-session", "event": {
+            "type": "agent/inbox/spliced", "data": {"inserted": [{"id": "message-2"}]}
+        }},
+    ))
+    subscription._notifications.put(SimpleNamespace(
+        method="session.event",
+        payload={"sessionId": "engine-session", "event": {"type": "model/text_delta", "data": {"text": "before control"}}},
+    ))
+    subscription._notifications.put(SimpleNamespace(
+        method="session.event",
+        payload={"sessionId": "engine-session", "event": {"type": "tool/result", "data": {}}},
+    ))
+    proc = SimpleNamespace(client=Client(subscription), closed=False)
+    proc.close = lambda: setattr(proc, "closed", True)
+    accepted = False
+
+    def on_event(event):
+        nonlocal accepted
+        if event.get("type") == "tool/result":
+            accepted = True
+
+    monkeypatch.setattr(harness_api, "final_response", lambda events: "before control")
+    monkeypatch.setattr(harness_api, "finish_reason", lambda _events: "tool_calls")
+    events, reply, reason = session_runner.run_session(
+        proc,
+        "engine-session",
+        [{"type": "text", "text": "step"}],
+        cancelled=lambda: False,
+        trace=lambda *_: None,
+        tenant_id="tenant",
+        host_session_id="host-session",
+        timeout_seconds=0.5,
+        on_event=on_event,
+        finished=lambda: accepted,
+    )
+
+    assert [event["type"] for event in events] == ["model/text_delta", "tool/result"]
+    assert (reply, reason) == ("before control", "tool_calls")
+    assert proc.closed is True

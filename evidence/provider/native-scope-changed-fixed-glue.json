@@ -1,0 +1,768 @@
+{
+  "status": "failed",
+  "runner": "g5-staffdeck-native-real-model-run.py",
+  "branch": "scope_changed",
+  "reproduction": {
+    "command": "env -u NODE_OPTIONS PYTHONPATH=StaffDeck-g5-sop-agent/backend:StaffDeck-g5-sop-agent/backend/src StaffDeck-g5-sop-agent/backend/.venv/bin/python products/pilotdeck-staffdeck-sop/evidence/g5-staffdeck-native-real-model-run.py",
+    "provider_config": "/Users/a1/.pilotdeck/pilotdeck.yaml",
+    "published_definition": "/Users/a1/Documents/Codex/2026-09-23/pilotdeck-g5-runtime-fixed-fe2f7cbd/products/pilotdeck-staffdeck-sop/evidence/g5-published-project-delivery-plan-1.0.1.json",
+    "private_state": "temporary Harness home, SQLite, and APP_SECRET are generated per run"
+  },
+  "execution_entry": "app.core.agent_loop.AgentLoop.handle_turn",
+  "execution_engine": "harness_v3",
+  "inputs": {
+    "ordinary_user_text": "请帮我梳理项目计划，目标是完成验证交付，目前处于验证阶段，暂时没有已知阻塞。范围和交付日期需要调整，请评估影响并在需要时请负责人确认，确认后继续完成计划。",
+    "human_handoff_resume_text": "负责人已经确认范围和交付日期影响，请继续推进这个项目计划并完成后续工作。",
+    "no_change_continuation_text": null
+  },
+  "published_definition": {
+    "id": "skill_preset_project_001",
+    "skill_id": "project_delivery_plan",
+    "version": "1.0.1",
+    "node_ids": [
+      "n1_collect",
+      "confirm_scope",
+      "build_plan",
+      "finalize_plan"
+    ],
+    "edges": [
+      {
+        "source_node_id": "n1_collect",
+        "next_node_id": "build_plan",
+        "condition": "default",
+        "priority": 1,
+        "label": "项目信息完整"
+      },
+      {
+        "source_node_id": "confirm_scope",
+        "next_node_id": "finalize_plan",
+        "condition": "confirmation_received",
+        "priority": 2,
+        "label": "已完成确认"
+      },
+      {
+        "source_node_id": "build_plan",
+        "next_node_id": "finalize_plan",
+        "condition": "no_scope_change",
+        "priority": 1,
+        "label": "无需额外确认"
+      },
+      {
+        "source_node_id": "build_plan",
+        "next_node_id": "confirm_scope",
+        "condition": "scope_changed",
+        "priority": 10,
+        "label": "需要负责人确认"
+      }
+    ]
+  },
+  "model": {
+    "provider": "provider1",
+    "model": "qwen3.6-flash-distill",
+    "protocol": "openai",
+    "endpoint": "https://llm-center.modelbest.co/v1"
+  },
+  "resolved_runtime": {
+    "harness_v3_root": "/Users/a1/Desktop/claw/openbmb/deepseek-harness-dsh-v0.1.2-alpha.2",
+    "bin_js": "/Users/a1/Desktop/claw/openbmb/deepseek-harness-dsh-v0.1.2-alpha.2/apps/cli/lib/bin.js",
+    "node_bin": "/Users/a1/.nvm/versions/node/v22.23.1/bin/node",
+    "private_harness_home": "/var/folders/xd/mml9c6fj2g95x40hgf_n6lrr0000gn/T/g5-native-real-sop-ff1t02r9/harness-home",
+    "private_sqlite": "/var/folders/xd/mml9c6fj2g95x40hgf_n6lrr0000gn/T/g5-native-real-sop-ff1t02r9/staffdeck.sqlite3"
+  },
+  "initial_turn": {
+    "reply": "已为你提交人工处理请求，请稍候，工作人员会尽快回复。",
+    "runtime_error_code": null,
+    "session_id": "session_b409d6373091897d",
+    "session_state": {
+      "session_id": "session_b409d6373091897d",
+      "tenant_id": "tenant_real",
+      "user_id": "user_real",
+      "agent_id": "agent_real",
+      "title": "请帮我梳理项目计划，目标是完成验证交付，目前处于验证阶段",
+      "active_skill_id": "project_delivery_plan",
+      "active_step_id": "confirm_scope",
+      "slots": {
+        "project_goal": "完成验证交付",
+        "current_stage": "验证阶段",
+        "known_blockers": "无"
+      },
+      "pending_tasks": [],
+      "awaiting_input": {
+        "type": "human_handoff",
+        "handoff_id": "handoff_258204ae1c1c44a2",
+        "pending_question": "收到。为了准确评估调整对计划的影响并进行确认，请您提供具体的**项目范围调整内容**和**新的交付日期**。"
+      },
+      "knowledge_context": [],
+      "summary": "最近回复：已为你提交人工处理请求，请稍候，工作人员会尽快回复。",
+      "last_agent_question": null,
+      "status": "handoff"
+    }
+  },
+  "before_resume": {
+    "session": {
+      "status": "handoff",
+      "active_skill_id": "project_delivery_plan",
+      "active_step_id": "confirm_scope",
+      "pending_tasks": [],
+      "awaiting_input": {
+        "type": "human_handoff",
+        "handoff_id": "handoff_258204ae1c1c44a2",
+        "pending_question": "收到。为了准确评估调整对计划的影响并进行确认，请您提供具体的**项目范围调整内容**和**新的交付日期**。"
+      }
+    },
+    "handoffs": [
+      {
+        "id": "handoff_258204ae1c1c44a2",
+        "status": "pending",
+        "human_reply": null,
+        "trigger_skill_id": "project_delivery_plan",
+        "trigger_step_id": "confirm_scope",
+        "answered_at": null
+      }
+    ],
+    "task_frames": [
+      {
+        "task_id": "task_4533224f966e4b2d",
+        "status": "handoff",
+        "step_id": "confirm_scope",
+        "result": {
+          "task_frame_id": "task_4533224f966e4b2d",
+          "status": "handoff",
+          "reply_fragment": "收到。为了准确评估调整对计划的影响并进行确认，请您提供具体的**项目范围调整内容**和**新的交付日期**。",
+          "slot_updates": {
+            "project_goal": "完成验证交付",
+            "current_stage": "验证阶段",
+            "known_blockers": "无"
+          },
+          "next_step_id": null,
+          "citations": [],
+          "evidence_results": [],
+          "capability_results": [],
+          "artifacts": [
+            {
+              "type": "human_handoff",
+              "handoff_id": "handoff_258204ae1c1c44a2"
+            }
+          ],
+          "task_summary": "收集项目状态信息，包括项目目标、当前阶段和已知阻塞项；生成项目推进计划草案，识别范围变更并标记待确认事项；请求用户提供具体的范围调整和交付日期变更细节",
+          "action_count": 8,
+          "error": null,
+          "structured_result": null
+        },
+        "error": {}
+      }
+    ],
+    "agent_loops": [
+      {
+        "id": "hloop_576f28687cf9440e",
+        "status": "active",
+        "kind": "sop",
+        "skill_id": "project_delivery_plan",
+        "finished_at": null
+      }
+    ]
+  },
+  "resume_turn": {
+    "channel": "human_handoff_resume",
+    "reply": "engine phase did not become idle before its deadline\n\n本次执行未完成（HARNESS_STEP_TIMEOUT）：engine phase did not become idle before its deadline",
+    "session_id": "session_b409d6373091897d",
+    "session_state": {
+      "status": "active",
+      "active_skill_id": null,
+      "active_step_id": null,
+      "pending_tasks": [],
+      "awaiting_input": null
+    }
+  },
+  "after_resume": {
+    "session": {
+      "status": "active",
+      "active_skill_id": null,
+      "active_step_id": null,
+      "pending_tasks": [],
+      "awaiting_input": null
+    },
+    "handoffs": [
+      {
+        "id": "handoff_258204ae1c1c44a2",
+        "status": "answered",
+        "human_reply": "负责人已经确认范围和交付日期影响，请继续推进这个项目计划并完成后续工作。",
+        "trigger_skill_id": "project_delivery_plan",
+        "trigger_step_id": "confirm_scope",
+        "answered_at": "2026-09-23T13:55:12.178260"
+      }
+    ],
+    "task_frames": [
+      {
+        "task_id": "task_4533224f966e4b2d",
+        "status": "failed",
+        "step_id": "confirm_scope",
+        "result": {
+          "task_frame_id": "task_4533224f966e4b2d",
+          "status": "failed",
+          "reply_fragment": "engine phase did not become idle before its deadline",
+          "slot_updates": {},
+          "next_step_id": null,
+          "citations": [],
+          "evidence_results": [],
+          "capability_results": [],
+          "artifacts": [],
+          "task_summary": "Harness v3: HARNESS_STEP_TIMEOUT",
+          "action_count": 1,
+          "error": {
+            "code": "HARNESS_STEP_TIMEOUT",
+            "message": "engine phase did not become idle before its deadline"
+          },
+          "structured_result": null
+        },
+        "error": {
+          "code": "HARNESS_STEP_TIMEOUT",
+          "message": "engine phase did not become idle before its deadline"
+        }
+      }
+    ],
+    "agent_loops": [
+      {
+        "id": "hloop_576f28687cf9440e",
+        "status": "failed",
+        "kind": "sop",
+        "skill_id": "project_delivery_plan",
+        "finished_at": "2026-09-23T13:57:23.015235"
+      }
+    ]
+  },
+  "event_counts": {
+    "assistant_message_created": 2,
+    "async_job_enqueued": 2,
+    "composition_snapshot_compiled": 2,
+    "harness_action_created": 8,
+    "harness_action_failed": 1,
+    "harness_control_result": 3,
+    "harness_tool_result": 5,
+    "harness_v3_assistant_message": 10,
+    "harness_v3_context_bound": 4,
+    "harness_v3_frame_bound": 4,
+    "harness_v3_model_request": 3,
+    "harness_v3_plan_finished": 2,
+    "harness_v3_plan_started": 2,
+    "harness_v3_process_started": 2,
+    "harness_v3_step_started": 11,
+    "harness_v3_task_finished": 3,
+    "harness_v3_turn_ended": 2,
+    "harness_v3_turn_started": 6,
+    "human_handoff_answered": 1,
+    "human_handoff_notified": 1,
+    "human_handoff_requested": 1,
+    "human_handoff_resume_started": 1,
+    "llm_call_finished": 11,
+    "llm_call_started": 12,
+    "router_decision_created": 2,
+    "session_state_changed": 2,
+    "skill_started": 1,
+    "skill_step_changed": 2,
+    "slot_updated": 1,
+    "task_frame_finished": 2,
+    "task_frame_started": 2,
+    "turn_plan_created": 2,
+    "user_message_received": 2
+  },
+  "key_events": [
+    {
+      "type": "harness_v3_process_started",
+      "payload": {
+        "model": "qwen3.6-flash-distill",
+        "model_config_id": "model_provider1_qwen",
+        "base_url": "https://llm-center.modelbest.co/v1",
+        "via": "staffdeck-model-gateway",
+        "thinking": "provider_default",
+        "reasoning_effort": "provider_default",
+        "workspace": "/private/var/folders/xd/mml9c6fj2g95x40hgf_n6lrr0000gn/T/g5-native-real-sop-ff1t02r9/data/harness_workspaces/tenant_real-bcaad256a04f/session_b409d6373091897d-014f80ce4484/turn-msg_c4b0e9fe71a6415a-13fd3917fd48",
+        "boot_ms": 908,
+        "pooled": false,
+        "process_uses": 1,
+        "execution_engine": "harness_v3",
+        "turn_id": "msg_c4b0e9fe71a6415a",
+        "user_message_id": "msg_c4b0e9fe71a6415a",
+        "client_turn_id": "native-real-1"
+      }
+    },
+    {
+      "type": "harness_action_created",
+      "payload": {
+        "action": "finish",
+        "tool_name": "mcp__staffdeck__submit_step_result",
+        "arguments": {
+          "status": "completed",
+          "reply_fragment": "已收集项目状态信息：\n- **项目目标**：完成验证交付\n- **当前阶段**：验证阶段\n- **已知阻塞项**：无\n\n下一步将进入「build_plan」步骤，开始梳理项目推进计划，评估范围和交付日期调整的影响。",
+          "slot_updates": {
+            "project_goal": "完成验证交付",
+            "current_stage": "验证阶段",
+            "known_blockers": "无"
+          },
+          "next_step_id": "build_plan",
+          "task_summary": "收集项目状态信息，包括项目目标、当前阶段和已知阻塞项"
+        },
+        "call_id": "call_66b12e7c503744778cc34336",
+        "execution_engine": "harness_v3",
+        "control": "submit_step_result",
+        "iteration": 1,
+        "task_frame_id": "task_4533224f966e4b2d",
+        "harness_run_id": "hrun_3c50a3a6d8944a0d",
+        "agent_loop_id": "hloop_576f28687cf9440e",
+        "turn_id": "msg_c4b0e9fe71a6415a",
+        "user_message_id": "msg_c4b0e9fe71a6415a",
+        "client_turn_id": "native-real-1"
+      }
+    },
+    {
+      "type": "harness_control_result",
+      "payload": {
+        "call_id": "call_66b12e7c503744778cc34336",
+        "is_error": false,
+        "execution_engine": "harness_v3",
+        "success": true,
+        "result": {
+          "accepted": true,
+          "notice": "SOP 步骤结果已提交，请停止生成。"
+        },
+        "error": null,
+        "receipt": null,
+        "task_frame_id": "task_4533224f966e4b2d",
+        "harness_run_id": "hrun_3c50a3a6d8944a0d",
+        "agent_loop_id": "hloop_576f28687cf9440e",
+        "turn_id": "msg_c4b0e9fe71a6415a",
+        "user_message_id": "msg_c4b0e9fe71a6415a",
+        "client_turn_id": "native-real-1"
+      }
+    },
+    {
+      "type": "harness_v3_task_finished",
+      "payload": {
+        "status": "completed",
+        "next_step_id": "build_plan",
+        "control": "submit_step_result",
+        "snapshot_id": "1c678ec812b5b3d0267056380df771ecf1e0a8d4256ec98399fb9246b9e25b18",
+        "execution_engine": "harness_v3",
+        "occurred_at": "2026-09-23T13:54:43.355939+00:00",
+        "task_frame_id": "task_4533224f966e4b2d",
+        "harness_run_id": "hrun_3c50a3a6d8944a0d",
+        "agent_loop_id": "hloop_576f28687cf9440e",
+        "turn_id": "msg_c4b0e9fe71a6415a",
+        "user_message_id": "msg_c4b0e9fe71a6415a",
+        "client_turn_id": "native-real-1"
+      }
+    },
+    {
+      "type": "harness_action_created",
+      "payload": {
+        "action": "tool",
+        "tool_name": "mcp__staffdeck__capability_describe",
+        "arguments": {
+          "kind": "all"
+        },
+        "call_id": "call_7d55102ea30b436181379183",
+        "execution_engine": "harness_v3",
+        "iteration": 1,
+        "task_frame_id": "task_4533224f966e4b2d",
+        "harness_run_id": "hrun_3c50a3a6d8944a0d",
+        "agent_loop_id": "hloop_576f28687cf9440e",
+        "turn_id": "msg_c4b0e9fe71a6415a",
+        "user_message_id": "msg_c4b0e9fe71a6415a",
+        "client_turn_id": "native-real-1"
+      }
+    },
+    {
+      "type": "harness_action_created",
+      "payload": {
+        "action": "finish",
+        "tool_name": "mcp__staffdeck__submit_step_result",
+        "arguments": {
+          "status": "completed",
+          "reply_fragment": "已生成项目推进计划草案：\n\n**1. 目标与范围**\n- **项目目标**：完成验证交付\n- **当前阶段**：验证阶段\n- **范围调整说明**：需调整项目范围和交付日期\n\n**2. 里程碑表**\n| 里程碑 | 预计时间 | 责任人 | 状态 |\n|--------|----------|--------|------|\n| 验证环境准备 | T+0 | 待定 | 进行中 |\n| 核心功能验证 | T+5 | 待定 | 待开始 |\n| 问题修复与回归 | T+10 | 待定 | 待开始 |\n| 最终验收交付 | T+15 | 待定 | 待开始 |\n\n**3. 行动项**\n- [ ] 明确验证范围边界\n- [ ] 制定详细验证计划\n- [ ] 分配验证资源\n- [ ] 执行验证测试\n- [ ] 修复发现的问题\n- [ ] 准备交付文档\n\n**4. 风险与依赖**\n- **风险**：范围调整可能导致进度延迟\n- **依赖**：需要明确的验收标准和资源支持\n\n**5. 待决策事项**\n- ⚠️ **范围调整影响评估**：请确认范围调整的具体内容和新的交付日期\n- ⚠️ **所需确认人**：项目负责人/产品经理\n\n**下一步**：由于涉及范围变更，将进入「confirm_scope」步骤，请您确认调整后的范围和交付日期。",
+          "slot_updates": {},
+          "next_step_id": "confirm_scope",
+          "task_summary": "生成项目推进计划草案，识别范围变更并标记待确认事项"
+        },
+        "call_id": "call_1013fab165cc47f08d9e12d0",
+        "execution_engine": "harness_v3",
+        "control": "submit_step_result",
+        "iteration": 2,
+        "task_frame_id": "task_4533224f966e4b2d",
+        "harness_run_id": "hrun_3c50a3a6d8944a0d",
+        "agent_loop_id": "hloop_576f28687cf9440e",
+        "turn_id": "msg_c4b0e9fe71a6415a",
+        "user_message_id": "msg_c4b0e9fe71a6415a",
+        "client_turn_id": "native-real-1"
+      }
+    },
+    {
+      "type": "harness_control_result",
+      "payload": {
+        "call_id": "call_1013fab165cc47f08d9e12d0",
+        "is_error": false,
+        "execution_engine": "harness_v3",
+        "success": true,
+        "result": {
+          "accepted": true,
+          "notice": "SOP 步骤结果已提交，请停止生成。"
+        },
+        "error": null,
+        "receipt": null,
+        "task_frame_id": "task_4533224f966e4b2d",
+        "harness_run_id": "hrun_3c50a3a6d8944a0d",
+        "agent_loop_id": "hloop_576f28687cf9440e",
+        "turn_id": "msg_c4b0e9fe71a6415a",
+        "user_message_id": "msg_c4b0e9fe71a6415a",
+        "client_turn_id": "native-real-1"
+      }
+    },
+    {
+      "type": "harness_v3_task_finished",
+      "payload": {
+        "status": "completed",
+        "next_step_id": "confirm_scope",
+        "control": "submit_step_result",
+        "snapshot_id": "1c678ec812b5b3d0267056380df771ecf1e0a8d4256ec98399fb9246b9e25b18",
+        "execution_engine": "harness_v3",
+        "occurred_at": "2026-09-23T13:54:49.381972+00:00",
+        "task_frame_id": "task_4533224f966e4b2d",
+        "harness_run_id": "hrun_3c50a3a6d8944a0d",
+        "agent_loop_id": "hloop_576f28687cf9440e",
+        "turn_id": "msg_c4b0e9fe71a6415a",
+        "user_message_id": "msg_c4b0e9fe71a6415a",
+        "client_turn_id": "native-real-1"
+      }
+    },
+    {
+      "type": "harness_action_created",
+      "payload": {
+        "action": "tool",
+        "tool_name": "mcp__staffdeck__capability_invoke",
+        "arguments": {
+          "arguments": {
+            "message": "项目目标：完成验证交付。当前阶段：验证阶段。已知阻塞：无。用户提出需要调整项目范围和交付日期，请评估调整对计划的影响，并确认后续安排。"
+          },
+          "operation": "handoff.request/v1",
+          "resource_id": "handoff:confirm_scope"
+        },
+        "call_id": "call_2cd6a323f4df4b2b9fd24a59",
+        "execution_engine": "harness_v3",
+        "iteration": 1,
+        "task_frame_id": "task_4533224f966e4b2d",
+        "harness_run_id": "hrun_3c50a3a6d8944a0d",
+        "agent_loop_id": "hloop_576f28687cf9440e",
+        "turn_id": "msg_c4b0e9fe71a6415a",
+        "user_message_id": "msg_c4b0e9fe71a6415a",
+        "client_turn_id": "native-real-1"
+      }
+    },
+    {
+      "type": "harness_action_created",
+      "payload": {
+        "action": "tool",
+        "tool_name": "mcp__staffdeck__capability_describe",
+        "arguments": {
+          "kind": "all"
+        },
+        "call_id": "call_2906fc8468f34ae5a306e989",
+        "execution_engine": "harness_v3",
+        "iteration": 2,
+        "task_frame_id": "task_4533224f966e4b2d",
+        "harness_run_id": "hrun_3c50a3a6d8944a0d",
+        "agent_loop_id": "hloop_576f28687cf9440e",
+        "turn_id": "msg_c4b0e9fe71a6415a",
+        "user_message_id": "msg_c4b0e9fe71a6415a",
+        "client_turn_id": "native-real-1"
+      }
+    },
+    {
+      "type": "harness_action_created",
+      "payload": {
+        "action": "tool",
+        "tool_name": "mcp__staffdeck__capability_describe",
+        "arguments": {
+          "kind": "tool"
+        },
+        "call_id": "call_0eb2f24d83f9432e898fbef3",
+        "execution_engine": "harness_v3",
+        "iteration": 3,
+        "task_frame_id": "task_4533224f966e4b2d",
+        "harness_run_id": "hrun_3c50a3a6d8944a0d",
+        "agent_loop_id": "hloop_576f28687cf9440e",
+        "turn_id": "msg_c4b0e9fe71a6415a",
+        "user_message_id": "msg_c4b0e9fe71a6415a",
+        "client_turn_id": "native-real-1"
+      }
+    },
+    {
+      "type": "harness_action_created",
+      "payload": {
+        "action": "tool",
+        "tool_name": "mcp__staffdeck__capability_describe",
+        "arguments": {
+          "kind": "general_skill"
+        },
+        "call_id": "call_576ec74ba0344b86926ff8ef",
+        "execution_engine": "harness_v3",
+        "iteration": 4,
+        "task_frame_id": "task_4533224f966e4b2d",
+        "harness_run_id": "hrun_3c50a3a6d8944a0d",
+        "agent_loop_id": "hloop_576f28687cf9440e",
+        "turn_id": "msg_c4b0e9fe71a6415a",
+        "user_message_id": "msg_c4b0e9fe71a6415a",
+        "client_turn_id": "native-real-1"
+      }
+    },
+    {
+      "type": "harness_action_created",
+      "payload": {
+        "action": "finish",
+        "tool_name": "mcp__staffdeck__submit_step_result",
+        "arguments": {
+          "status": "awaiting_user",
+          "reply_fragment": "收到。为了准确评估调整对计划的影响并进行确认，请您提供具体的**项目范围调整内容**和**新的交付日期**。",
+          "task_summary": "请求用户提供具体的范围调整和交付日期变更细节"
+        },
+        "call_id": "call_a680ad3341834cd2bcb1c3fc",
+        "execution_engine": "harness_v3",
+        "control": "submit_step_result",
+        "iteration": 5,
+        "task_frame_id": "task_4533224f966e4b2d",
+        "harness_run_id": "hrun_3c50a3a6d8944a0d",
+        "agent_loop_id": "hloop_576f28687cf9440e",
+        "turn_id": "msg_c4b0e9fe71a6415a",
+        "user_message_id": "msg_c4b0e9fe71a6415a",
+        "client_turn_id": "native-real-1"
+      }
+    },
+    {
+      "type": "harness_control_result",
+      "payload": {
+        "call_id": "call_a680ad3341834cd2bcb1c3fc",
+        "is_error": false,
+        "execution_engine": "harness_v3",
+        "success": true,
+        "result": {
+          "accepted": true,
+          "notice": "SOP 步骤结果已提交，请停止生成。"
+        },
+        "error": null,
+        "receipt": null,
+        "task_frame_id": "task_4533224f966e4b2d",
+        "harness_run_id": "hrun_3c50a3a6d8944a0d",
+        "agent_loop_id": "hloop_576f28687cf9440e",
+        "turn_id": "msg_c4b0e9fe71a6415a",
+        "user_message_id": "msg_c4b0e9fe71a6415a",
+        "client_turn_id": "native-real-1"
+      }
+    },
+    {
+      "type": "harness_v3_task_finished",
+      "payload": {
+        "status": "awaiting_user",
+        "next_step_id": null,
+        "control": "submit_step_result",
+        "snapshot_id": "1c678ec812b5b3d0267056380df771ecf1e0a8d4256ec98399fb9246b9e25b18",
+        "execution_engine": "harness_v3",
+        "occurred_at": "2026-09-23T13:55:12.084702+00:00",
+        "task_frame_id": "task_4533224f966e4b2d",
+        "harness_run_id": "hrun_3c50a3a6d8944a0d",
+        "agent_loop_id": "hloop_576f28687cf9440e",
+        "turn_id": "msg_c4b0e9fe71a6415a",
+        "user_message_id": "msg_c4b0e9fe71a6415a",
+        "client_turn_id": "native-real-1"
+      }
+    },
+    {
+      "type": "human_handoff_requested",
+      "payload": {
+        "handoff_id": "handoff_258204ae1c1c44a2",
+        "agent_id": "agent_real",
+        "assignee_user_id": "user_real",
+        "trigger_skill_id": "project_delivery_plan",
+        "trigger_step_id": "confirm_scope",
+        "pending_question": "收到。为了准确评估调整对计划的影响并进行确认，请您提供具体的**项目范围调整内容**和**新的交付日期**。",
+        "turn_id": "msg_c4b0e9fe71a6415a",
+        "user_message_id": "msg_c4b0e9fe71a6415a",
+        "client_turn_id": "native-real-1",
+        "execution_engine": "harness_v3"
+      }
+    },
+    {
+      "type": "human_handoff_notified",
+      "payload": {
+        "handoff_id": "handoff_258204ae1c1c44a2",
+        "assignee_user_id": "user_real",
+        "channel": "web"
+      }
+    },
+    {
+      "type": "task_frame_finished",
+      "payload": {
+        "task_frame_id": "task_4533224f966e4b2d",
+        "kind": "sop",
+        "skill_id": "project_delivery_plan",
+        "skill_name": "项目推进计划整理（G5 复核）",
+        "status": "handoff",
+        "step_id": "confirm_scope",
+        "action_count": 8,
+        "error": null,
+        "agent_loop_id": "hloop_576f28687cf9440e",
+        "agent_loop_status": "active",
+        "execution_engine": "harness_v3",
+        "turn_id": "msg_c4b0e9fe71a6415a",
+        "user_message_id": "msg_c4b0e9fe71a6415a",
+        "client_turn_id": "native-real-1"
+      }
+    },
+    {
+      "type": "assistant_message_created",
+      "payload": {
+        "message_id": "msg_b53c36eac2824899",
+        "assistant_message_id": "msg_b53c36eac2824899",
+        "reply": "已为你提交人工处理请求，请稍候，工作人员会尽快回复。",
+        "user_message_id": "msg_c4b0e9fe71a6415a",
+        "turn_id": "msg_c4b0e9fe71a6415a",
+        "client_turn_id": "native-real-1",
+        "execution_engine": "harness_v3"
+      }
+    },
+    {
+      "type": "session_state_changed",
+      "payload": {
+        "session_id": "session_b409d6373091897d",
+        "tenant_id": "tenant_real",
+        "user_id": "user_real",
+        "agent_id": "agent_real",
+        "title": "请帮我梳理项目计划，目标是完成验证交付，目前处于验证阶段",
+        "active_skill_id": "project_delivery_plan",
+        "active_step_id": "confirm_scope",
+        "slots": {
+          "project_goal": "完成验证交付",
+          "current_stage": "验证阶段",
+          "known_blockers": "无"
+        },
+        "pending_tasks": [],
+        "awaiting_input": {
+          "type": "human_handoff",
+          "handoff_id": "handoff_258204ae1c1c44a2",
+          "pending_question": "收到。为了准确评估调整对计划的影响并进行确认，请您提供具体的**项目范围调整内容**和**新的交付日期**。"
+        },
+        "knowledge_context": [],
+        "summary": "最近回复：已为你提交人工处理请求，请稍候，工作人员会尽快回复。",
+        "last_agent_question": null,
+        "status": "handoff",
+        "turn_id": "msg_c4b0e9fe71a6415a",
+        "user_message_id": "msg_c4b0e9fe71a6415a",
+        "client_turn_id": "native-real-1",
+        "execution_engine": "harness_v3"
+      }
+    },
+    {
+      "type": "human_handoff_answered",
+      "payload": {
+        "handoff_id": "handoff_258204ae1c1c44a2",
+        "agent_id": "agent_real",
+        "trigger_skill_id": "project_delivery_plan",
+        "trigger_step_id": "confirm_scope",
+        "answered_by_user_id": "user_real",
+        "reply_preview": "负责人已经确认范围和交付日期影响，请继续推进这个项目计划并完成后续工作。",
+        "source": "web"
+      }
+    },
+    {
+      "type": "human_handoff_resume_started",
+      "payload": {
+        "handoff_id": "handoff_258204ae1c1c44a2",
+        "agent_id": "agent_real",
+        "trigger_skill_id": "project_delivery_plan",
+        "trigger_step_id": "confirm_scope"
+      }
+    },
+    {
+      "type": "harness_v3_process_started",
+      "payload": {
+        "model": "qwen3.6-flash-distill",
+        "model_config_id": "model_provider1_qwen",
+        "base_url": "https://llm-center.modelbest.co/v1",
+        "via": "staffdeck-model-gateway",
+        "thinking": "provider_default",
+        "reasoning_effort": "provider_default",
+        "workspace": "/private/var/folders/xd/mml9c6fj2g95x40hgf_n6lrr0000gn/T/g5-native-real-sop-ff1t02r9/data/harness_workspaces/tenant_real-bcaad256a04f/session_b409d6373091897d-014f80ce4484/turn-msg_34967c7c6c9f49ac-ea89a63f7ea5",
+        "boot_ms": 0,
+        "pooled": true,
+        "process_uses": 2,
+        "execution_engine": "harness_v3",
+        "turn_id": "msg_34967c7c6c9f49ac",
+        "user_message_id": "msg_34967c7c6c9f49ac",
+        "client_turn_id": "serverturn_67ecb90f5a0b4dec"
+      }
+    },
+    {
+      "type": "task_frame_finished",
+      "payload": {
+        "task_frame_id": "task_4533224f966e4b2d",
+        "kind": "sop",
+        "skill_id": "project_delivery_plan",
+        "skill_name": "项目推进计划整理（G5 复核）",
+        "status": "failed",
+        "step_id": "confirm_scope",
+        "action_count": 1,
+        "error": {
+          "code": "HARNESS_STEP_TIMEOUT",
+          "message": "engine phase did not become idle before its deadline"
+        },
+        "agent_loop_id": "hloop_576f28687cf9440e",
+        "agent_loop_status": "failed",
+        "execution_engine": "harness_v3",
+        "turn_id": "msg_34967c7c6c9f49ac",
+        "user_message_id": "msg_34967c7c6c9f49ac",
+        "client_turn_id": "serverturn_67ecb90f5a0b4dec"
+      }
+    },
+    {
+      "type": "assistant_message_created",
+      "payload": {
+        "message_id": "msg_8c064192e878413c",
+        "assistant_message_id": "msg_8c064192e878413c",
+        "reply": "engine phase did not become idle before its deadline\n\n本次执行未完成（HARNESS_STEP_TIMEOUT）：engine phase did not become idle before its deadline",
+        "user_message_id": "msg_34967c7c6c9f49ac",
+        "turn_id": "msg_34967c7c6c9f49ac",
+        "client_turn_id": "serverturn_67ecb90f5a0b4dec",
+        "execution_engine": "harness_v3"
+      }
+    },
+    {
+      "type": "session_state_changed",
+      "payload": {
+        "session_id": "session_b409d6373091897d",
+        "tenant_id": "tenant_real",
+        "user_id": "user_real",
+        "agent_id": "agent_real",
+        "title": "请帮我梳理项目计划，目标是完成验证交付，目前处于验证阶段",
+        "active_skill_id": null,
+        "active_step_id": null,
+        "slots": {},
+        "pending_tasks": [],
+        "awaiting_input": null,
+        "knowledge_context": [],
+        "summary": "最近回复：engine phase did not become idle before its deadline\n\n本次执行未完成（HARNESS_STEP_TIMEOUT）：engine phase did not become idle bef",
+        "last_agent_question": null,
+        "status": "active",
+        "turn_id": "msg_34967c7c6c9f49ac",
+        "user_message_id": "msg_34967c7c6c9f49ac",
+        "client_turn_id": "serverturn_67ecb90f5a0b4dec",
+        "execution_engine": "harness_v3"
+      }
+    }
+  ],
+  "state_semantics": {
+    "session_status_note": "ChatSession.status is a handoff marker; SOP outcome is owned by handoff, task-frame, and agent-loop records. Completion requires answered handoff when scope_changed, no pending handoff when no_change, cleared pending/active step, and completed task-frame plus agent-loop.",
+    "expected_after_resume": {
+      "handoff_status": "answered",
+      "task_frame_status": "completed",
+      "agent_loop_status": "completed",
+      "session_active_step": null
+    }
+  }
+}

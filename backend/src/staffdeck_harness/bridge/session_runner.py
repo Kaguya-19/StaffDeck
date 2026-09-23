@@ -27,6 +27,7 @@ def run_session(
     host_session_id: str,
     timeout_seconds: float = 600.0,
     on_event: Callable[[dict[str, Any]], None] | None = None,
+    finished: Callable[[], bool] | None = None,
 ) -> tuple[list[dict[str, Any]], str, str | None]:
     try:
         result = _run_session(
@@ -39,6 +40,7 @@ def run_session(
             host_session_id=host_session_id,
             timeout_seconds=timeout_seconds,
             on_event=on_event,
+            finished=finished,
         )
         for event in reversed(result[0]):
             if event.get("type") == "turn/end":
@@ -63,6 +65,7 @@ def _run_session(
     host_session_id: str,
     timeout_seconds: float = 600.0,
     on_event: Callable[[dict[str, Any]], None] | None = None,
+    finished: Callable[[], bool] | None = None,
 ) -> tuple[list[dict[str, Any]], str, str | None]:
     import time
 
@@ -70,6 +73,7 @@ def _run_session(
     client = proc.client
     events: list[dict[str, Any]] = []
     relay = SessionEventRelay(tenant_id, host_session_id, trace)
+    finished_without_idle = False
     with client.subscribe_session_notifications(session_id) as sub:
         message_id = client.session_prompt(
             session_id, content_blocks, notification_subscription=sub
@@ -88,6 +92,9 @@ def _run_session(
             # (a finished step is a closed step; the engine must not keep generating).
             n = next_notification(sub)
             if n is None:
+                if received and finished is not None and finished():
+                    finished_without_idle = True
+                    break
                 continue
             payload = n.payload or {}
             if n.method == "session.event" and payload.get("sessionId") == session_id:
@@ -104,6 +111,9 @@ def _run_session(
                     relay(ev)
                     if on_event:
                         on_event(ev)
+                    if received and finished is not None and finished():
+                        finished_without_idle = True
+                        break
             if (
                 n.method == "session.status"
                 and payload.get("sessionId") == session_id
@@ -111,6 +121,10 @@ def _run_session(
                 and received
             ):
                 break
+    if finished_without_idle:
+        # A control result closes the StaffDeck activation before Harness necessarily emits idle.
+        # Do not return that still-running process to the warm pool for the next user turn.
+        proc.close()
     from deepseek_harness.api import (
         final_response,
         finish_reason as _finish_reason,

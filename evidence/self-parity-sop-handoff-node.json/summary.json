@@ -1,0 +1,15 @@
+{
+  "scenarios": 1,
+  "blocked": [
+    "sop_handoff_node/staffdeck-legacy: BLOCKED: adapter exited 1:   File \"/Users/a1/Desktop/claw/openbmb/StaffDeck-g5-sop-agent/backend/src/staffdeck_harness/bridge/engine_host.py\", line 68, in get_runtime |     cfg.validate() |   File \"/Users/a1/Desktop/claw/openbmb/StaffDeck-g5-sop-agent/backend/src/staffdeck_harness/bridge/worker.py\", line 88, in validate |     raise EngineUnavailable(f\"Harness v3 engine not built: {self.bin_js} missing (run pnpm build:lib in {self.harness_v3_root})\") | staffdeck_harness.contracts.errors.EngineUnavailable: Harness v3 engine not built: apps/cli/lib/bin.js missing (run pnpm build:lib in .)",
+    "sop_handoff_node/staffdeck-pilotdeck: BLOCKED: adapter exited 1:   File \"/Users/a1/Desktop/claw/openbmb/StaffDeck-g5-sop-agent/tools/agent-loop-parity/adapters/staffdeck_engine_impl.py\", line 618, in main |     _assert_source_checkout() |   File \"/Users/a1/Desktop/claw/openbmb/StaffDeck-g5-sop-agent/tools/agent-loop-parity/adapters/staffdeck_engine_impl.py\", line 128, in _assert_source_checkout |     raise RuntimeError(f\"PilotDeck sidecar build is missing: {sidecar_path}\") | RuntimeError: PilotDeck sidecar build is missing: /Users/a1/Documents/Codex/2026-09-22/pilotdeck-g5-sop/dist/src/cli/pilotdeck-agent-loop-sidecar.js"
+  ],
+  "failed": [],
+  "oracleFailures": [],
+  "knownGaps": [],
+  "declaredSemanticDifferences": [],
+  "baselineDifferences": [],
+  "skippedNotApplicable": [],
+  "formatWarnings": [],
+  "output": "evidence/self-parity-sop-handoff-node.json"
+}
