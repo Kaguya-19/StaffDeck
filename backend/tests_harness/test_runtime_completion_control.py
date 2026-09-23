@@ -102,6 +102,23 @@ def test_sop_prompt_preserves_native_handoff_node_contract():
     assert "当前节点声明了人工交接动作" not in _step_prompt(ordinary, None, [], "")
 
 
+
+def test_handoff_control_schema_describes_native_handoff_status():
+    from types import SimpleNamespace
+    from staffdeck_harness.bridge.control import ExecutionHost
+
+    req = TaskRequirement(
+        task_frame_id="tf1",
+        kind="sop",
+        goal="confirm",
+        sop_context={"step": {"type": "handoff", "allowed_actions": ["handoff_human"]}},
+    )
+    execution = ExecutionHost(SimpleNamespace(), req)
+    submit = next(item for item in execution.tool_schemas() if item["name"] == "submit_step_result")
+    assert "status=handoff" in submit["description"]
+    assert "awaiting_user" in submit["description"]
+
+
 def test_completed_control_cannot_erase_an_already_filled_required_slot(db):
     cap = _host(db, CompositionCompiler(hooks=()).compile(_staff()))
     req = TaskRequirement(task_frame_id="tf1", kind="sop", goal="collect",

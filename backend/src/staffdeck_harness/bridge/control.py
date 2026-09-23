@@ -147,7 +147,23 @@ class ExecutionHost:
             self.exhausted = self.total_actions >= self.max_actions and self.capabilities.slot.finish is None
 
     def tool_schemas(self):
-        return all_tool_schemas()
+        schemas = all_tool_schemas()
+        if self.requirement.kind != "sop":
+            return schemas
+        step = (self.requirement.sop_context or {}).get("step")
+        if not isinstance(step, dict):
+            return schemas
+        actions = {str(value).strip() for value in (step.get("allowed_actions") or [])}
+        if step.get("type") != "handoff" and "handoff_human" not in actions:
+            return schemas
+        for schema in schemas:
+            if schema.get("name") == "submit_step_result":
+                schema["description"] = (
+                    "提交当前 SOP 步骤结果。当前节点声明人工交接（handoff_human）；"
+                    "需要负责人或人工确认时必须提交 status=handoff，不能提交 awaiting_user。调用后停止生成。"
+                )
+                break
+        return schemas
 
     def model_tool_names(self):
         names = {s["name"] for s in self.capabilities.tool_schemas()}

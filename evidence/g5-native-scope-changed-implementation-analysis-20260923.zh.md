@@ -42,3 +42,20 @@ Completion 契约由测试覆盖：接受控制前已收到的 Harness 事件保
 - deterministic parity handoff 场景：`BLOCKED`，本任务树缺少 Harness `apps/cli/lib/bin.js` 与 PilotDeck sidecar `dist`；未将阻塞转成 PASS
 
 原始真实 provider 失败和后续 v2 artifact 只作为只读 provenance，完整路径记录在 self-check JSON；scope-changed handoff/resume 仍需独立验收者从新隔离树复验。
+
+## 实现侧真实 provider 重跑
+
+runner：`tools/g5-native-scope-changed-real-provider.py`
+
+- 首轮（schema glue 之前）：`evidence/g5-native-scope-changed-real-provider-20260923.json`
+  - Harness/Node/私有 DB/MCP `16220` 均正常
+  - 完成 `n1_collect -> build_plan -> confirm_scope`
+  - provider 在 handoff 节点提交 `status=awaiting_user`，未生成 handoff；该失败原样保留
+- 第二轮（当前 handoff 节点 capability schema glue）：`evidence/g5-native-scope-changed-real-provider-v2-20260923.json`
+  - 相同普通输入与 `project_delivery_plan@1.0.1` 图
+  - 真实调用 `submit_step_result(status=handoff)`，持久化 `HumanHandoffRequest`
+  - 人工回复通过 `human_handoff_resume` 完成，task frame/agent loop/session 均 completed
+  - resume 观察到 `pooled=false, process_uses=1`，证明 finished-before-idle 后未复用 stale continuation
+  - trace 保留完整 AgentEvent payload；无 429
+
+这是一份实现侧真实 provider PASS，仍不替代新的独立验收树复验。
