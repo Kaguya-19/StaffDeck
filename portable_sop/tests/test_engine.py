@@ -157,20 +157,20 @@ def test_submit_can_wait_for_user_without_all_required_slots():
     assert advanced["state"]["active_step_id"] == "done"
 
 
-def test_waiting_status_cannot_advance_to_another_step():
+def test_submit_preserves_native_wait_with_explicit_next_step():
     state = prepare(BUNDLE, {"selected_skill_id": "onboard"})["state"]
 
-    with pytest.raises(SopRuntimeError) as error:
-        submit(
-            BUNDLE,
-            state,
-            {"status": "awaiting_user", "replyFragment": "What is your name?", "nextStepId": "done"},
-        )
+    waiting = submit(
+        BUNDLE,
+        state,
+        {"status": "awaiting_user", "replyFragment": "I will continue from the next step.", "nextStepId": "done"},
+    )
 
-    assert error.value.code == "WAIT_STATUS_CANNOT_ADVANCE"
+    assert waiting["state"]["status"] == "awaiting_user"
+    assert waiting["state"]["active_step_id"] == "done"
 
 
-def test_handoff_step_rejects_awaiting_user_and_requires_handoff_status():
+def test_submit_allows_native_wait_on_a_handoff_declared_step():
     bundle = {
         "sops": [{
             "id": "handoff",
@@ -183,13 +183,13 @@ def test_handoff_step_rejects_awaiting_user_and_requires_handoff_status():
     }
     state = prepare(bundle, {"selected_skill_id": "handoff"})["state"]
 
-    with pytest.raises(SopRuntimeError) as error:
-        submit(bundle, state, {"status": "awaiting_user", "replyFragment": "Please confirm."})
+    waiting = submit(bundle, state, {"status": "awaiting_user", "replyFragment": "Please confirm."})
 
-    assert error.value.code == "HANDOFF_REQUIRED"
+    assert waiting["state"]["status"] == "awaiting_user"
+    assert waiting["state"]["active_step_id"] == "approval"
 
 
-def test_response_step_without_missing_fields_rejects_awaiting_user():
+def test_submit_allows_native_wait_without_declared_missing_fields():
     bundle = {
         "sops": [{
             "id": "response",
@@ -202,10 +202,10 @@ def test_response_step_without_missing_fields_rejects_awaiting_user():
     }
     state = prepare(bundle, {"selected_skill_id": "response"})["state"]
 
-    with pytest.raises(SopRuntimeError) as error:
-        submit(bundle, state, {"status": "awaiting_user", "replyFragment": "Please confirm."})
+    waiting = submit(bundle, state, {"status": "awaiting_user", "replyFragment": "Please confirm."})
 
-    assert error.value.code == "WAIT_INPUT_NOT_REQUIRED"
+    assert waiting["state"]["status"] == "awaiting_user"
+    assert waiting["state"]["active_step_id"] == "answer"
 
 
 def test_submit_rejects_undeclared_handoff():
