@@ -1,26 +1,26 @@
 {
   "evidence_role": "implementation-side self-validation",
-  "generated_at": "2026-09-23T14:33:04.455097+00:00",
+  "generated_at": "2026-09-23T14:35:55.009932+00:00",
   "checkout": "/Users/a1/Desktop/claw/openbmb/StaffDeck-g5-sop-agent",
-  "head": "5e07316ad7f1703683d62ed06bb9b69a64e31810",
+  "head": "7084dcdbceb3305751d9b6edcf27e862eda03d94",
   "ordinary_user_input": "请帮我梳理项目计划，目标是完成验证交付，目前处于验证阶段，暂时没有已知阻塞。范围和交付日期需要调整，请评估影响并在需要时请负责人确认，确认后继续完成计划。",
   "checks": [
     {
       "command": "/Users/a1/Desktop/claw/openbmb/StaffDeck-g5-sop-agent/backend/.venv/bin/python -m pytest -p no:capture -q backend/tests_harness/test_engine_turn_ownership.py backend/tests_harness/test_runtime_completion_control.py backend/tests_harness/test_capability_host_hardening.py",
       "exit_code": 0,
-      "stdout": ".....................................................\n53 passed in 3.88s\n",
+      "stdout": ".....................................................\n53 passed in 3.73s\n",
       "stderr": ""
     },
     {
       "command": "/Users/a1/Desktop/claw/openbmb/StaffDeck-g5-sop-agent/backend/.venv/bin/python -m pytest -p no:capture -q backend/tests_harness/modules/test_sop_lifecycle_boundary.py backend/tests_harness/modules/test_sop_runtime.py backend/tests_harness/test_handoff_source_boundary.py backend/tests_harness/test_handoff_core.py backend/tests_harness/test_execution_context_lifecycle.py",
       "exit_code": 0,
-      "stdout": "......................................\n38 passed in 2.08s\n",
+      "stdout": "......................................\n38 passed in 2.11s\n",
       "stderr": ""
     },
     {
       "command": "/Users/a1/Desktop/claw/openbmb/StaffDeck-g5-sop-agent/backend/.venv/bin/python -m pytest -p no:capture -q portable_sop/tests",
       "exit_code": 0,
-      "stdout": ".....................................................\n53 passed in 1.28s\n",
+      "stdout": ".....................................................\n53 passed in 1.26s\n",
       "stderr": ""
     }
   ],
