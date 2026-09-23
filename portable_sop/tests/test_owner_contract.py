@@ -215,6 +215,76 @@ def test_http_prepare_projects_native_graph_and_sub_sop_metadata_without_owner_r
     assert prepared["step"]["subSopId"] == step["sub_sop_id"]
 
 
+def test_http_prepare_projects_edge_conditions_and_target_step_context():
+    bundle = {
+        "sops": [{
+            "id": "branching",
+            "content": {
+                "start_node_id": "plan",
+                "nodes": [
+                    {"node_id": "plan", "type": "response", "instruction": "Build a plan."},
+                    {"node_id": "approve", "type": "handoff", "name": "Confirm scope", "instruction": "Ask the owner to confirm."},
+                    {"node_id": "finish", "type": "response", "name": "Finish", "instruction": "Complete the plan."},
+                ],
+                "edges": [
+                    {"source_node_id": "plan", "next_node_id": "finish", "condition": "no_scope_change", "priority": 1, "label": "No change"},
+                    {"source_node_id": "plan", "next_node_id": "approve", "condition": "scope_changed", "priority": 10, "label": "Needs confirmation"},
+                ],
+            },
+        }],
+    }
+    prepared = http_prepare(bundle, {"selected_skill_id": "branching"}, "branching-transitions")
+    assert prepared["step"]["allowedNextStepIds"] == ["finish", "approve"]
+    assert prepared["step"]["transitions"] == [
+        {
+            "nextStepId": "finish",
+            "condition": "no_scope_change",
+            "priority": 1,
+            "label": "No change",
+            "targetStep": {
+                "step_id": "finish",
+                "node_id": "finish",
+                "type": "response",
+                "name": "Finish",
+                "instruction": "Complete the plan.",
+                "optional": False,
+                "condition": None,
+                "expected_user_info": [],
+                "allowed_actions": [],
+                "knowledge_scope": {},
+                "retry_policy": {},
+                "metadata": {},
+                "sub_sop_id": None,
+                "assignee_user_id": None,
+                "assignee_notify_channel": None,
+            },
+        },
+        {
+            "nextStepId": "approve",
+            "condition": "scope_changed",
+            "priority": 10,
+            "label": "Needs confirmation",
+            "targetStep": {
+                "step_id": "approve",
+                "node_id": "approve",
+                "type": "handoff",
+                "name": "Confirm scope",
+                "instruction": "Ask the owner to confirm.",
+                "optional": False,
+                "condition": None,
+                "expected_user_info": [],
+                "allowed_actions": [],
+                "knowledge_scope": {},
+                "retry_policy": {},
+                "metadata": {},
+                "sub_sop_id": None,
+                "assignee_user_id": None,
+                "assignee_notify_channel": None,
+            },
+        },
+    ]
+
+
 @pytest.mark.parametrize("value", [None, "", "   ", 0, False, [], {}, ["Ada"], {"name": "Ada"}, "Ada"])
 def test_http_submit_matches_native_owner_validator_for_raw_slot_values(value: Any):
     prepared = http_prepare(FLOW, {"selected_skill_id": "collect"}, f"slot-prepare-{repr(value)}")

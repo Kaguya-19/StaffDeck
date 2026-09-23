@@ -270,7 +270,32 @@ def _wire_state(session: ChatSession, prior: dict[str, Any]) -> dict[str, Any]:
 
 def _wire_step(skill: Skill, session: ChatSession, step: dict[str, Any]) -> dict[str, Any]:
     outgoing = GraphRules.outgoing_edges(skill.content_json).get(session.active_step_id or "", [])
+    nodes_by_id = {
+        str(node.get("node_id") or ""): node
+        for node in GraphRules.nodes(skill.content_json)
+        if node.get("node_id")
+    }
     actions = GraphRules.step_actions(step)
+    transitions = []
+    for edge in outgoing:
+        next_step_id = _text(edge.get("next_node_id"))
+        target = nodes_by_id.get(next_step_id)
+        if not next_step_id or target is None:
+            continue
+        try:
+            priority = int(edge.get("priority") or 0)
+        except (TypeError, ValueError):
+            priority = 0
+        transition = {
+            "nextStepId": next_step_id,
+            "condition": _text(edge.get("condition")),
+            "priority": priority,
+            "targetStep": deepcopy(GraphRules.node_as_step(target)),
+        }
+        label = _text(edge.get("label"))
+        if label:
+            transition["label"] = label
+        transitions.append(transition)
     return {
         "skillId": skill.skill_id, "skillName": skill.name, "version": skill.version,
         "nodeId": session.active_step_id, "node": deepcopy(step),
@@ -278,6 +303,7 @@ def _wire_step(skill: Skill, session: ChatSession, step: dict[str, Any]) -> dict
         "expectedUserInfo": [_text(value) for value in step.get("expected_user_info", []) if _text(value)],
         "knownSlots": deepcopy(session.slots_json or {}),
         "allowedNextStepIds": [_text(edge.get("next_node_id")) for edge in outgoing if _text(edge.get("next_node_id"))],
+        "transitions": transitions,
         "requiredToolNames": [action.partition(":")[2].strip() for action in actions if action.startswith("call_tool:")],
         "allowedActions": actions,
         "isTerminal": GraphRules.terminal_position(skill.content_json, session.active_step_id, session.slots_json or {}),
