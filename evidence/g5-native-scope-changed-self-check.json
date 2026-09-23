@@ -1,20 +1,20 @@
 {
   "evidence_role": "implementation-side self-validation",
-  "generated_at": "2026-09-23T15:07:17.527160+00:00",
+  "generated_at": "2026-09-23T15:09:08.064538+00:00",
   "checkout": "/Users/a1/Desktop/claw/openbmb/StaffDeck-g5-sop-agent",
-  "head": "5a444d50d5e45300abe53c9ac91d67f8eddca86a",
+  "head": "89c5dcaeca1a9c7791860f34081afd3087db9a47",
   "ordinary_user_input": "请帮我梳理项目计划，目标是完成验证交付，目前处于验证阶段，暂时没有已知阻塞。范围和交付日期需要调整，请评估影响并在需要时请负责人确认，确认后继续完成计划。",
   "checks": [
     {
       "command": "/Users/a1/Desktop/claw/openbmb/StaffDeck-g5-sop-agent/backend/.venv/bin/python -m pytest -p no:capture -q backend/tests_harness/test_engine_turn_ownership.py backend/tests_harness/test_runtime_completion_control.py backend/tests_harness/test_capability_host_hardening.py",
       "exit_code": 0,
-      "stdout": "......................................................\n54 passed in 3.71s\n",
+      "stdout": "......................................................\n54 passed in 3.76s\n",
       "stderr": ""
     },
     {
       "command": "/Users/a1/Desktop/claw/openbmb/StaffDeck-g5-sop-agent/backend/.venv/bin/python -m pytest -p no:capture -q backend/tests_harness/modules/test_sop_lifecycle_boundary.py backend/tests_harness/modules/test_sop_runtime.py backend/tests_harness/test_handoff_source_boundary.py backend/tests_harness/test_handoff_core.py backend/tests_harness/test_execution_context_lifecycle.py",
       "exit_code": 0,
-      "stdout": "......................................\n38 passed in 2.17s\n",
+      "stdout": "......................................\n38 passed in 2.06s\n",
       "stderr": ""
     },
     {
