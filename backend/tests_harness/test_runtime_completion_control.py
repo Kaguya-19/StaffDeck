@@ -37,6 +37,37 @@ def test_completion_requires_successful_node_capabilities_before_closing(db):
     assert result.success and cap.slot.closed
 
 
+def test_collect_step_cannot_pause_when_expected_slots_are_filled(db):
+    cap = _host(db, CompositionCompiler(hooks=()).compile(_staff()))
+    req = TaskRequirement(
+        task_frame_id="tf1",
+        kind="sop",
+        goal="collect",
+        expected_slots=["project_goal"],
+        sop_context={
+            "step": {
+                "node_id": "n1_collect",
+                "type": "collect_info",
+                "expected_user_info": ["project_goal"],
+            }
+        },
+        allowed_transitions=[{"next_node_id": "build_plan"}],
+    )
+    cap.slot.allowed_next_steps = frozenset({"build_plan"})
+    execution = ExecutionHost(cap, req)
+    result, _ = execution.invoke_proxy(
+        "submit_step_result",
+        {
+            "status": "awaiting_user",
+            "reply_fragment": "请确认。",
+            "slot_updates": {"project_goal": "完成验证交付"},
+        },
+        _ctx(),
+    )
+    assert result.error["code"] == "COLLECT_STEP_MUST_ADVANCE"
+    assert not cap.slot.closed
+
+
 def test_handoff_control_is_an_accepted_sop_completion(db):
     cap = _host(db, CompositionCompiler(hooks=()).compile(_staff()))
     execution = ExecutionHost(
@@ -117,6 +148,55 @@ def test_handoff_control_schema_describes_native_handoff_status():
     submit = next(item for item in execution.tool_schemas() if item["name"] == "submit_step_result")
     assert "status=handoff" in submit["description"]
     assert "awaiting_user" in submit["description"]
+
+
+def test_collect_prompt_prioritizes_node_boundary_and_advancement():
+    from staffdeck_harness.bridge.task_agent import _step_prompt
+
+    req = TaskRequirement(
+        task_frame_id="tf1",
+        kind="sop",
+        goal="完成项目计划",
+        requirements=["评估范围变化并等待负责人审批"],
+        current_user_message="目标、阶段和阻塞项都已提供。",
+        expected_slots=["project_goal", "current_stage", "known_blockers"],
+        sop_context={
+            "skill_id": "project_delivery_plan",
+            "step": {
+                "node_id": "n1_collect",
+                "type": "collect_info",
+                "instruction": "提取项目状态",
+                "expected_user_info": ["project_goal", "current_stage", "known_blockers"],
+            },
+        },
+        allowed_transitions=[{"next_node_id": "build_plan"}],
+    )
+
+    prompt = _step_prompt(req, None, [], "")
+    assert "当前节点契约优先于整帧目标" in prompt
+    assert "不要在 collect_info 节点执行后续节点的影响分析、审批或最终行动清单" in prompt
+    assert "status=\"completed\"" in prompt
+    assert "build_plan" in prompt
+
+    response_prompt = _step_prompt(
+        req.model_copy(
+            update={
+                "sop_context": {
+                    "skill_id": "project_delivery_plan",
+                    "step": {
+                        "node_id": "build_plan",
+                        "type": "response",
+                        "instruction": "生成推进计划",
+                    },
+                }
+            }
+        ),
+        None,
+        [],
+        "",
+    )
+    assert "response 节点只负责生成本节点" in response_prompt
+    assert "不要因为后续节点需要用户确认就把本节点提前提交为 awaiting_user" in response_prompt
 
 
 def test_completed_control_cannot_erase_an_already_filled_required_slot(db):

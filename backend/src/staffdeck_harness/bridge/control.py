@@ -50,6 +50,7 @@ class StepCompletionPort:
     """Bridge commits an accepted domain result; it owns no validation rules."""
     def __init__(self, capabilities, requirement):
         self.capabilities = capabilities
+        self.requirement = requirement
         from staffdeck_harness.contracts.manifest import SlotName
         registry = getattr(capabilities, 'registry', None)
         installed = registry.provider(SlotName.RUNTIME_SOP) if registry else None
@@ -67,6 +68,22 @@ class StepCompletionPort:
             capability_results=host.results, citations=host.citations, evidence=host.evidence)
         if not result.success:
             return result
+        step = (self.requirement.sop_context or {}).get("step")
+        if (
+            isinstance(step, dict)
+            and step.get("type") == "collect_info"
+            and (step.get("expected_user_info") or [])
+            and slot.allowed_next_steps
+            and arguments.get("status") == "awaiting_user"
+        ):
+            from app.session.slot_policy import missing_step_slots
+
+            if not missing_step_slots(self.requirement, arguments.get("slot_updates")):
+                return ModuleResult.fail(
+                    "COLLECT_STEP_MUST_ADVANCE",
+                    "当前收集节点的必填字段已齐全，请提交 status=completed 并选择允许的下一节点；"
+                    "只有缺少字段时才可提交 awaiting_user。",
+                )
         shape = validate_result(result.data, STEP_RESULT_SCHEMA)
         if not shape.success:
             return shape
