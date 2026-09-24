@@ -119,6 +119,17 @@ class LocalSopSource:
         from app.agents.branching import get_agent
         from staffdeck_harness.composition.staff import _sops
 
+        # A normal turn may start after the publication request has committed,
+        # while its request Session has already loaded the old AgentSkillBranch
+        # (for example through agent authorization).  Keep management-side
+        # validation in the caller transaction, but runtime sessions must read
+        # the committed branch projection used by the native planner.
+        if context.session_id:
+            from sqlmodel import Session
+
+            with Session(self.db.get_bind()) as fresh:
+                agent = get_agent(fresh, context.tenant_id, staff.staff_id)
+                return _sops(fresh, context.tenant_id, agent)
         agent = get_agent(self.db, context.tenant_id, staff.staff_id)
         return _sops(self.db, context.tenant_id, agent)
 
