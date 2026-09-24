@@ -9,17 +9,17 @@ deterministic "no_documents" route without touching any model or network.
 
 from __future__ import annotations
 
-from tests_harness.modules.conftest import invoke_provider
-
 import json
-
 import re
+from dataclasses import dataclass
+from types import SimpleNamespace
 
 import pytest
 
 from app.agents.branching import ensure_private_resource_binding, get_agent
-from app.db.models import KnowledgeBase
+from app.db.models import KnowledgeBase, ModelConfig
 from staffdeck_harness.capabilities.facade import FacadeDeps
+from staffdeck_harness.capabilities.local_services import _knowledge_route_deps
 from staffdeck_harness.contracts.errors import PermissionDenied
 from staffdeck_harness.contracts.invocation import ModuleResult
 from staffdeck_harness.contracts.manifest import ModuleKind, SlotName
@@ -27,6 +27,7 @@ from staffdeck_harness.contracts.security import DEFAULT_ACTION_MAP, PolicyActio
 from staffdeck_harness.modules.builtin import KnowledgeProvider
 from staffdeck_harness.modules.registry import ModuleRegistry, discover_and_install
 from staffdeck_harness.modules.taxonomy import tree
+from tests_harness.modules.conftest import invoke_provider
 
 from .conftest import FakeSettings
 
@@ -241,3 +242,86 @@ def test_provider_knowledge_local_model_view_carries_labels_and_keeps_evidence_o
     assert len(view["results"][0]["excerpt"]) == _MODEL_EXCERPT_CHARS
     assert "route_trace" not in view and "selected_buckets" not in view
     assert len(json.dumps(view, ensure_ascii=False)) < 4000  # well under the engine's 50 KB inline budget
+
+
+def test_knowledge_route_deps_bounds_nested_v3_model_without_changing_route(monkeypatch):
+    model = ModelConfig(
+        id="route-model",
+        tenant_id="t1",
+        name="Configured provider",
+        api_key_encrypted="encrypted",
+        model="configured-provider",
+    ).model_copy(update={"timeout_seconds": 600.0})
+    deps = FacadeDeps(
+        db=None,
+        guard=None,
+        security_context=None,
+        model_config=model,
+        remaining_seconds=lambda: 45.0,
+    )
+    host = SimpleNamespace(execution_engine="harness_v3", _deps=lambda: deps)
+    monkeypatch.setattr(
+        "app.config.get_settings",
+        lambda: SimpleNamespace(harness_v3_knowledge_route_timeout_seconds=30.0),
+    )
+
+    bounded = _knowledge_route_deps(host)
+
+    assert bounded is not deps
+    assert bounded.model_config is not model
+    assert bounded.model_config.model == model.model
+    assert bounded.model_config.timeout_seconds == 30.0
+    assert deps.model_config.timeout_seconds == 600.0
+
+
+def test_knowledge_route_deps_bounds_runtime_snapshot_to_step_deadline(monkeypatch):
+    @dataclass(frozen=True)
+    class RouteConfig:
+        model: str
+        timeout_seconds: float | None = None
+
+    model = RouteConfig(model="configured-provider", timeout_seconds=600.0)
+    deps = FacadeDeps(
+        db=None,
+        guard=None,
+        security_context=None,
+        model_config=model,
+        remaining_seconds=lambda: 5.0,
+    )
+    monkeypatch.setattr(
+        "app.config.get_settings",
+        lambda: SimpleNamespace(harness_v3_knowledge_route_timeout_seconds=30.0),
+    )
+
+    bounded = _knowledge_route_deps(
+        SimpleNamespace(execution_engine="harness_v3", _deps=lambda: deps)
+    )
+
+    assert bounded.model_config == RouteConfig(model="configured-provider", timeout_seconds=5.0)
+    assert model.timeout_seconds == 600.0
+
+
+def test_knowledge_route_deps_keeps_non_v3_and_missing_routes_untouched(monkeypatch):
+    model = ModelConfig(
+        id="route-model",
+        tenant_id="t1",
+        name="Configured provider",
+        api_key_encrypted="encrypted",
+        model="configured-provider",
+    ).model_copy(update={"timeout_seconds": 600.0})
+    deps = FacadeDeps(db=None, guard=None, security_context=None, model_config=model)
+    monkeypatch.setattr(
+        "app.config.get_settings",
+        lambda: SimpleNamespace(harness_v3_knowledge_route_timeout_seconds=30.0),
+    )
+
+    legacy = _knowledge_route_deps(SimpleNamespace(execution_engine="legacy", _deps=lambda: deps))
+    no_model = _knowledge_route_deps(
+        SimpleNamespace(
+            execution_engine="harness_v3",
+            _deps=lambda: FacadeDeps(db=None, guard=None, security_context=None),
+        )
+    )
+
+    assert legacy is deps
+    assert no_model.model_config is None

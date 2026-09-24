@@ -110,6 +110,11 @@ class Settings(BaseSettings):
     harness_operator_tenants: str = ""
     harness_v3_initialize_timeout_seconds: float = 90.0
     harness_v3_request_timeout_seconds: float = 600.0
+    # Bound the optional nested model call used by knowledge routing inside a
+    # Harness v3 capability invocation. A timeout preserves the configured
+    # route as the default and lets KnowledgeService use its existing lexical
+    # fallback when a provider cannot answer promptly.
+    harness_v3_knowledge_route_timeout_seconds: float = 30.0
     # OSS_LOCAL or BUSINESS_BASE; one per deployment.
     security_profile: str = "OSS_LOCAL"
     harness_module_selections: dict[str, str] = {}
