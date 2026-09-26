@@ -1751,11 +1751,13 @@ export function KnowledgeAddPage({ currentUser }: KnowledgePageProps = {}) {
   }, [activeJobs]);
 
   useEffect(() => {
+    const controller = new AbortController();
     sortedJobs
       .filter((job) => job.status === 'succeeded' && !checkedDiscoveryJobIds.includes(job.id))
       .forEach((job) => {
-        void loadDiscoveriesForJob(job);
+        void loadDiscoveriesForJob(job, controller.signal);
       });
+    return () => controller.abort();
   }, [sortedJobs, checkedDiscoveryJobIds, agentId]);
 
   async function refreshKnowledgeBases() {
@@ -1827,27 +1829,46 @@ export function KnowledgeAddPage({ currentUser }: KnowledgePageProps = {}) {
     }
   }
 
-  async function loadDiscoveriesForJob(job: KnowledgeIngestJobRead) {
-    setCheckedDiscoveryJobIds((prev) => (prev.includes(job.id) ? prev : [...prev, job.id]));
-    try {
-      const suffix = agentId ? `&agent_id=${encodeURIComponent(agentId)}` : '';
-      const rows = await api.get<KnowledgeDiscoveryRead[]>(`/api/enterprise/knowledge/discoveries?tenant_id=${TENANT_ID}${suffix}`);
-      const next = rows.filter(
-        (item) =>
-          item.status === 'pending' &&
-          item.suggestion_type !== 'warning' &&
-          item.knowledge_base_id === job.knowledge_base_id &&
-          (!job.document_id || item.document_id === job.document_id),
-      );
-      if (next.length === 0) return;
-      setPendingDiscoveries((current) => {
-        const seen = new Set(current.map((item) => item.id));
-        return [...current, ...next.filter((item) => !seen.has(item.id))];
-      });
-      setDiscoveryModalOpen(true);
-    } catch (error) {
-      notify.warning(error instanceof Error ? error.message : '加载知识发现建议失败');
+  async function loadDiscoveriesForJob(job: KnowledgeIngestJobRead, signal: AbortSignal) {
+    const suffix = agentId ? `&agent_id=${encodeURIComponent(agentId)}` : '';
+    for (let attempt = 0; attempt < 5 && !signal.aborted; attempt += 1) {
+      try {
+        const rows = await api.get<KnowledgeDiscoveryRead[]>(`/api/enterprise/knowledge/discoveries?tenant_id=${TENANT_ID}${suffix}`);
+        if (signal.aborted) return;
+        const next = rows.filter(
+          (item) =>
+            item.status === 'pending' &&
+            item.suggestion_type !== 'warning' &&
+            item.knowledge_base_id === job.knowledge_base_id &&
+            (!job.document_id || item.document_id === job.document_id),
+        );
+        if (next.length > 0) {
+          setPendingDiscoveries((current) => {
+            const seen = new Set(current.map((item) => item.id));
+            return [...current, ...next.filter((item) => !seen.has(item.id))];
+          });
+          setDiscoveryModalOpen(true);
+          setCheckedDiscoveryJobIds((prev) => (prev.includes(job.id) ? prev : [...prev, job.id]));
+          return;
+        }
+      } catch (error) {
+        if (signal.aborted) return;
+        if (attempt === 4) notify.warning(error instanceof Error ? error.message : '加载知识发现建议失败');
+      }
+      if (attempt < 4) {
+        await new Promise<void>((resolve) => {
+          const finish = () => {
+            window.clearTimeout(timer);
+            signal.removeEventListener('abort', finish);
+            resolve();
+          };
+          const timer = window.setTimeout(finish, 700);
+          signal.addEventListener('abort', finish, { once: true });
+          if (signal.aborted) finish();
+        });
+      }
     }
+    if (!signal.aborted) setCheckedDiscoveryJobIds((prev) => (prev.includes(job.id) ? prev : [...prev, job.id]));
   }
 
   async function confirmDiscovery(item: KnowledgeDiscoveryRead) {
