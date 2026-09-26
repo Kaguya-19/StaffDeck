@@ -35,6 +35,7 @@ declare module '@staffdeck/business-ui/SkillsPageHost' {
   export type EnterpriseAuthUser = { id?: string; username?: string; tenant_id?: string; is_admin?: boolean };
   export type SkillsPageHost = Record<string, any>;
   export const SkillsPageHostProvider: ComponentType<{ value: SkillsPageHost; children: ReactNode }>;
+  export const openGalleryAgentId: (agents: Array<{ id: string; is_overall?: boolean }>) => string;
 }
 
 declare module '@staffdeck/business-ui/SkillsPage' {
@@ -47,6 +48,7 @@ declare module '@staffdeck/business-ui/KnowledgePageHost' {
   import type { ComponentType, ReactNode } from 'react';
   export type Host = Record<string, any>;
   export const KnowledgePageHostProvider: ComponentType<{ value: Host; children: ReactNode }>;
+  export const openGalleryAgentId: (agents: Array<{ id: string; is_overall?: boolean }>) => string;
 }
 
 declare module '@staffdeck/business-ui/KnowledgePage' {

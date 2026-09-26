@@ -33,7 +33,7 @@ function renderWithDiscoveries(discoveries: () => unknown[]) {
     agentScope: { read: () => '', persist: vi.fn(), clear: vi.fn(), emit: vi.fn() },
     visibleEmployeeAgents: (agents: unknown[]) => agents,
     canManageEmployeeAgent: () => true,
-    openGalleryAgentId: 'overall',
+    openGalleryAgentId: (agents: Array<{ id: string; is_overall?: boolean }>) => agents.find((agent) => agent.is_overall)?.id || '',
     openGalleryImportSourceOptions: () => [],
     resourceCreatorName: () => '',
     renderMarkdownBlocks: (value: string) => value,
