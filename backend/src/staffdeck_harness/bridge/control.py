@@ -51,6 +51,7 @@ class StepCompletionPort:
     def __init__(self, capabilities, requirement):
         self.capabilities = capabilities
         self.requirement = requirement
+        self._collect_empty_checked = False
         from staffdeck_harness.contracts.manifest import SlotName
         registry = getattr(capabilities, 'registry', None)
         installed = registry.provider(SlotName.RUNTIME_SOP) if registry else None
@@ -64,6 +65,14 @@ class StepCompletionPort:
         shape = validate_result(arguments, STEP_RESULT_SCHEMA)
         if not shape.success:
             return shape
+        from app.session.slot_policy import slot_is_filled
+
+        updates = arguments.get("slot_updates") or {}
+        known = self.requirement.known_slots or {}
+        required = self.requirement.expected_slots or self.requirement.required_slots
+        for field in required:
+            if field in updates and slot_is_filled(known.get(field)) and not slot_is_filled(updates[field]):
+                return ModuleResult.fail("REQUIRED_SLOT_ERASURE", f"已满足字段 {field} 不能被空更新清除。")
         result = self.validator.submit(arguments, allowed_next_steps=slot.allowed_next_steps,
             capability_results=host.results, citations=host.citations, evidence=host.evidence)
         if not result.success:
@@ -75,10 +84,17 @@ class StepCompletionPort:
                 "信息齐全后再提交 completed 并选择下一节点。",
             )
         step = (self.requirement.sop_context or {}).get("step")
+        if isinstance(step, dict):
+            from staffdeck_harness.sop.graph import GraphRules
+
+            declared_handoff = GraphRules.is_handoff_node(step)
+            if arguments.get("status") == "handoff" and not declared_handoff:
+                return ModuleResult.fail("HANDOFF_NOT_DECLARED", "当前节点未声明人工交接，请先完成本节点并推进到声明 handoff 的节点。")
+            if arguments.get("status") == "awaiting_user" and declared_handoff:
+                return ModuleResult.fail("HANDOFF_REQUIRED", "当前节点声明人工交接，等待负责人确认必须提交 handoff，不能提交 awaiting_user。")
         if (
             isinstance(step, dict)
             and step.get("type") in {"response", "knowledge_query"}
-            and slot.allowed_next_steps
             and arguments.get("status") == "awaiting_user"
             and not {"ask_user", "ask_missing"}.intersection(step.get("allowed_actions") or [])
         ):
@@ -94,17 +110,27 @@ class StepCompletionPort:
             isinstance(step, dict)
             and step.get("type") == "collect_info"
             and (step.get("expected_user_info") or [])
-            and slot.allowed_next_steps
             and arguments.get("status") == "awaiting_user"
         ):
             from app.session.slot_policy import missing_step_slots
 
-            if not missing_step_slots(self.requirement, arguments.get("slot_updates")):
+            missing = missing_step_slots(self.requirement, arguments.get("slot_updates"))
+            if not missing:
                 return ModuleResult.fail(
                     "COLLECT_STEP_MUST_ADVANCE",
                     "当前收集节点的必填字段已齐全，请提交 status=completed 并选择允许的下一节点；"
                     "只有缺少字段时才可提交 awaiting_user。",
                 )
+            if (not self._collect_empty_checked and not arguments.get("slot_updates")
+                    and (self.requirement.current_user_message or "").strip()):
+                self._collect_empty_checked = True
+                return ModuleResult.fail(
+                    "COLLECT_FIELDS_CHECK",
+                    "请重读本轮用户原话，先将已提供的字段写入 slot_updates；"
+                    "仅询问确实缺少的字段。用户原话：" + self.requirement.current_user_message,
+                )
+            return ModuleResult.ok({**result.data,
+                "reply_fragment": "请补充以下信息，以继续当前步骤：\n" + "\n".join(f"- {field}" for field in missing)})
         shape = validate_result(result.data, STEP_RESULT_SCHEMA)
         if not shape.success:
             return shape
@@ -204,6 +230,13 @@ class ExecutionHost:
         return schemas
 
     def model_tool_names(self):
+        if self.requirement.kind == "sop":
+            step = (self.requirement.sop_context or {}).get("step")
+            if isinstance(step, dict) and step.get("type") == "response" and not self.requirement.expected_slots:
+                actions = {str(action).strip() for action in step.get("allowed_actions") or []}
+                if (not self.requirement.required_capability_names
+                        and not any(action.startswith("call_tool:") for action in actions)):
+                    return {"submit_step_result"}
         names = {s["name"] for s in self.capabilities.tool_schemas()}
         names.add("external_task_status")
         if self.requirement.kind == "sop":

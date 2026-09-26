@@ -256,15 +256,20 @@ def _step_prompt(requirement: TaskRequirement, state: PipelineState, decision_co
                     "slot_updates，并选择允许的 next_step_id；不得用 status=\"awaiting_user\" 提前暂停。"
                     "只有仍缺少要求字段且无法从本轮输入可靠提取时，才提交 status=\"awaiting_user\" 并具体提问；"
                     "等待补充信息时不得填写 next_step_id，必须保留当前收集节点。"
+                    "reply_fragment 不得再次索要已写入 slot_updates 或已知槽位的字段；用户可见补充问题以实际缺失字段为准。"
                 )
             elif step.get("type") in {"response", "knowledge_query"}:
-                parts.append(
+                boundary = (
                     "# 当前节点边界\n"
                     "当前 response/knowledge_query 节点只负责完成本节点 instruction 与必需能力要求。完成后必须调用 "
-                    "submit_step_result 提交 status=\"completed\"，并选择允许的 next_step_id；"
-                    "不要因为后续节点需要用户确认就把本节点提前提交为 awaiting_user。"
-                    "需要负责人确认时，应先完成本节点，再路由到图中明确的 handoff 节点。"
+                    "submit_step_result 提交 status=\"completed\"。"
                 )
+                if transitions:
+                    boundary += ("从允许的下一节点中选择 next_step_id；不要因为后续节点需要用户确认就把本节点"
+                                 "提前提交为 awaiting_user。需要负责人确认时，应先完成本节点，再路由到图中明确的 handoff 节点。")
+                else:
+                    boundary += "当前节点没有后继步骤；将最终答复写入 reply_fragment，不填写 next_step_id，不要只输出正文而不提交。"
+                parts.append(boundary)
             actions = {str(value).strip() for value in (step.get("allowed_actions") or [])}
             if step.get("type") == "handoff" or "handoff_human" in actions:
                 parts.append(

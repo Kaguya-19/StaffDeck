@@ -18,6 +18,16 @@ def test_conversation_cannot_submit_a_sop_result(db):
     assert cap.slot.finish is None and not cap.slot.closed
 
 
+def test_terminal_response_exposes_only_its_submission_to_model(db):
+    cap = _host(db, CompositionCompiler(hooks=()).compile(_staff()))
+    requirement = TaskRequirement(task_frame_id="tf1", kind="sop", goal="flow",
+        sop_context={"step": {"type": "response", "allowed_actions": ["answer_user"]}})
+    assert ExecutionHost(cap, requirement).model_tool_names() == {"submit_step_result"}
+    required = requirement.model_copy(update={"required_capability_names": ["knowledge.search/v1"]})
+    assert "submit_step_result" in ExecutionHost(cap, required).model_tool_names()
+    assert len(ExecutionHost(cap, required).model_tool_names()) > 1
+
+
 def test_completion_requires_successful_node_capabilities_before_closing(db):
     cap = _host(db, CompositionCompiler(hooks=()).compile(_staff()))
     req = TaskRequirement(
@@ -92,6 +102,23 @@ def test_missing_slots_wait_cannot_advance_and_can_be_repaired(db):
     assert cap.slot.finish["status"] == "awaiting_user"
     assert cap.slot.finish["next_step_id"] is None
     assert cap.slot.finish["slot_updates"] == {"project_goal": "交付新版本"}
+    assert cap.slot.finish["reply_fragment"] == "请补充以下信息，以继续当前步骤：\n- current_stage\n- known_blockers"
+
+
+def test_collect_empty_first_submission_is_checked_then_true_missing_fields_may_wait(db):
+    cap = _host(db, CompositionCompiler(hooks=()).compile(_staff()))
+    req = TaskRequirement(
+        task_frame_id="tf1", kind="sop", goal="collect",
+        current_user_message="请帮我梳理计划。", expected_slots=["current_stage"],
+        sop_context={"step": {"type": "collect_info", "expected_user_info": ["current_stage"]}},
+    )
+    execution = ExecutionHost(cap, req)
+    proposal = {"status": "awaiting_user", "reply_fragment": "请补充当前阶段。", "slot_updates": {}}
+    first, _ = execution.invoke_proxy("submit_step_result", proposal, _ctx())
+    assert first.error["code"] == "COLLECT_FIELDS_CHECK" and not cap.slot.closed
+    second, _ = execution.invoke_proxy("submit_step_result", proposal, _ctx())
+    assert second.success and cap.slot.finish["status"] == "awaiting_user"
+    assert cap.slot.finish["reply_fragment"] == "请补充以下信息，以继续当前步骤：\n- current_stage"
 
 
 @pytest.mark.parametrize("node_type", ["response", "knowledge_query"])
@@ -109,6 +136,15 @@ def test_output_node_without_missing_fields_rejects_premature_wait(db, node_type
     result, _ = execution.invoke_proxy("submit_step_result",
         {"status": "completed", "reply_fragment": "影响评估草案。", "next_step_id": "approval"}, _ctx())
     assert result.success and cap.slot.finish["next_step_id"] == "approval"
+
+
+def test_terminal_response_without_next_step_rejects_unneeded_wait(db):
+    cap = _host(db, CompositionCompiler(hooks=()).compile(_staff()))
+    req = TaskRequirement(task_frame_id="tf1", kind="sop", goal="finalize",
+        sop_context={"step": {"type": "response", "expected_user_info": [], "allowed_actions": ["answer_user"]}})
+    result, _ = ExecutionHost(cap, req).invoke_proxy("submit_step_result",
+        {"status": "awaiting_user", "reply_fragment": "已经完成。"}, _ctx())
+    assert result.error["code"] == "STEP_MUST_ADVANCE" and not cap.slot.closed
 
 
 @pytest.mark.parametrize("declared_wait", [False, True])
@@ -140,6 +176,25 @@ def test_handoff_control_is_an_accepted_sop_completion(db):
 
     assert result.success and cap.slot.closed
     assert cap.slot.finish["status"] == "handoff"
+
+
+def test_declared_handoff_rejects_ordinary_wait_and_undeclared_handoff_is_rejected(db):
+    cap = _host(db, CompositionCompiler(hooks=()).compile(_staff()))
+    req = TaskRequirement(task_frame_id="tf1", kind="sop", goal="confirm",
+        sop_context={"step": {"type": "handoff", "allowed_actions": ["handoff_human"]}})
+    execution = ExecutionHost(cap, req)
+    result, _ = execution.invoke_proxy("submit_step_result",
+        {"status": "awaiting_user", "reply_fragment": "请负责人确认。"}, _ctx())
+    assert result.error["code"] == "HANDOFF_REQUIRED" and not cap.slot.closed
+    result, _ = execution.invoke_proxy("submit_step_result",
+        {"status": "handoff", "reply_fragment": "请负责人确认。"}, _ctx())
+    assert result.success and cap.slot.finish["status"] == "handoff"
+
+    other = _host(db, CompositionCompiler(hooks=()).compile(_staff()))
+    other_req = req.model_copy(update={"sop_context": {"step": {"type": "knowledge_query", "allowed_actions": ["continue_flow"]}}})
+    result, _ = ExecutionHost(other, other_req).invoke_proxy("submit_step_result",
+        {"status": "handoff", "reply_fragment": "请负责人确认。"}, _ctx())
+    assert result.error["code"] == "HANDOFF_NOT_DECLARED" and not other.slot.closed
 
 
 def test_control_cannot_select_an_unlisted_transition(db):
@@ -255,6 +310,11 @@ def test_collect_prompt_prioritizes_node_boundary_and_advancement():
     assert "response/knowledge_query 节点只负责完成本节点" in response_prompt
     assert "不要因为后续节点需要用户确认就把本节点提前提交为 awaiting_user" in response_prompt
 
+    final_prompt = _step_prompt(req.model_copy(update={"sop_context": {
+        "skill_id": "project_delivery_plan", "step": {"node_id": "final", "type": "response", "instruction": "输出最终清单"}},
+        "allowed_transitions": []}), None, [], "")
+    assert "不填写 next_step_id" in final_prompt
+
 
 def test_completed_control_cannot_erase_an_already_filled_required_slot(db):
     cap = _host(db, CompositionCompiler(hooks=()).compile(_staff()))
@@ -263,8 +323,12 @@ def test_completed_control_cannot_erase_an_already_filled_required_slot(db):
     execution = ExecutionHost(cap, req)
     result, _ = execution.invoke_proxy("submit_step_result",
         {"status": "completed", "reply_fragment": "完成", "slot_updates": {"quota": "  "}}, _ctx())
-    assert result.error["code"] == "REQUIRED_SLOT_MISSING"
+    assert result.error["code"] == "REQUIRED_SLOT_ERASURE"
     assert not cap.slot.closed and cap.slot.finish is None
+    result, _ = execution.invoke_proxy("submit_step_result",
+        {"status": "awaiting_user", "reply_fragment": "请补充。", "slot_updates": {"quota": ""}}, _ctx())
+    assert result.error["code"] == "REQUIRED_SLOT_ERASURE"
+    assert not cap.slot.closed
     result, _ = execution.invoke_proxy("submit_step_result",
         {"status": "completed", "reply_fragment": "完成", "slot_updates": {"quota": 0}}, _ctx())
     assert result.success and cap.slot.closed

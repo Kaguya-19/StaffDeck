@@ -151,6 +151,9 @@ class ModelGateway:
             if not wire["tools"]:
                 wire.pop("tools")
                 wire.pop("tool_choice", None)
+            elif (getattr(getattr(act.host, "requirement", None), "kind", None) == "sop"
+                  and allowed == {"mcp__staffdeck__submit_step_result"}):
+                wire["tool_choice"] = {"type": "function", "function": {"name": "mcp__staffdeck__submit_step_result"}}
         stream = bool(body.get("stream", True))
         driver = getattr(client, "driver", None)
         trace = getattr(act.host, "trace", None)

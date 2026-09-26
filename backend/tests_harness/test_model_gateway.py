@@ -121,6 +121,24 @@ def test_non_streaming_and_provider_failure():
     assert [e for e, _ in traces2] == ["llm_call_started", "llm_call_failed"]
 
 
+def test_sop_submission_only_gateway_requires_its_control_tool():
+    reg = ActivationRegistry()
+    seen = []
+    act, _ = _activation(reg)
+    act.host.requirement = SimpleNamespace(kind="sop")
+    act.host.model_tool_names = lambda: {"submit_step_result"}
+    client = _app(reg, _Client(_Driver(seen, [])))
+    tools = [{"type": "function", "function": {"name": f"mcp__staffdeck__{name}", "parameters": {}}}
+             for name in ("knowledge_search", "submit_step_result")]
+    response = client.post(CHAT_COMPLETIONS_PATH,
+        json={"messages": [{"role": "user", "content": "finish"}], "stream": False,
+              "tools": tools, "tool_choice": "auto"},
+        headers={"authorization": f"Bearer {act.token}"})
+    assert response.status_code == 200
+    assert [tool["function"]["name"] for tool in seen[0]["tools"]] == ["mcp__staffdeck__submit_step_result"]
+    assert seen[0]["tool_choice"] == {"type": "function", "function": {"name": "mcp__staffdeck__submit_step_result"}}
+
+
 def test_anthropic_model_is_streamed_through_the_tool_aware_adapter():
     """A non-chat-completions ModelConfig is no longer refused: the adapter layer serves it."""
     events = [
