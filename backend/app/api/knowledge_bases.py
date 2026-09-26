@@ -497,6 +497,15 @@ def upsert_okf_concept(
         db, request.tenant_id, knowledge_base_id, version.id, request.document_id
     )
     parsed = parse_okf_markdown(concept_id, request.content_md)
+    existing = db.exec(
+        select(KnowledgeConcept).where(
+            KnowledgeConcept.tenant_id == request.tenant_id,
+            KnowledgeConcept.knowledge_base_id == knowledge_base_id,
+            KnowledgeConcept.knowledge_base_version_id == version.id,
+            KnowledgeConcept.concept_id == parsed.concept_id,
+            KnowledgeConcept.status != "deleted",
+        )
+    ).first()
     rows = upsert_concepts(
         db,
         request.tenant_id,
@@ -508,6 +517,7 @@ def upsert_okf_concept(
                 "content_md": parsed.content_md,
                 "document_id": document_id,
                 "status": request.status,
+                "source_refs": existing.source_refs_json if existing else [],
             }
         ],
     )

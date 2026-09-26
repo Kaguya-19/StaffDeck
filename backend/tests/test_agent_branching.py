@@ -24,7 +24,7 @@ from app.agents.schema import AgentResourceImportRequest
 from app.api import agents as agents_api
 from app.api.agents import _skill_branch_read, import_agent_resources, list_agents, list_chat_agents
 from app.api.general_skills import archive_general_skill, list_general_skills
-from app.api.knowledge_bases import list_knowledge_bases, update_knowledge_base
+from app.api.knowledge_bases import list_knowledge_bases, update_knowledge_base, upsert_okf_concept
 from app.api.skills import (
     archive_skill,
     delete_skill,
@@ -53,7 +53,7 @@ from app.db.models import (
 )
 from app.db.seed import EXCHANGE_SKILL, REFUND_SKILL, _publish_seeded_system_resources
 from app.knowledge.okf import upsert_concepts
-from app.knowledge.schema import KnowledgeBaseUpdateRequest
+from app.knowledge.schema import KnowledgeBaseUpdateRequest, KnowledgeConceptUpdateRequest
 from app.skills.skill_schema import SkillCard, SkillUpdateRequest
 
 
@@ -1746,6 +1746,59 @@ def test_knowledge_branch_write_clones_existing_wiki_before_appending_concept() 
         assert cloned_buckets[0].document_id == cloned_documents[0].id
         assert cloned_chunks[0].document_id == cloned_documents[0].id
         assert cloned_chunks[0].bucket_id == cloned_buckets[0].id
+
+
+def test_okf_title_edit_preserves_cloned_source_refs() -> None:
+    with _test_session() as db:
+        db.add(Tenant(id="tenant_demo", name="Demo"))
+        agent = AgentProfile(id="agent_branch", tenant_id="tenant_demo", name="客服分支")
+        kb = KnowledgeBase(id="kb_demo", tenant_id="tenant_demo", name="业务资料")
+        db.add(agent)
+        db.add(kb)
+        base_version = ensure_knowledge_base_version(db, kb, "1.0.0")
+        document = KnowledgeDocument(
+            id="doc_base",
+            tenant_id="tenant_demo",
+            knowledge_base_id=kb.id,
+            knowledge_base_version_id=base_version.id,
+            filename="policy.md",
+            file_type="md",
+            title="政策文档",
+            status="ready",
+        )
+        concept = KnowledgeConcept(
+            tenant_id="tenant_demo",
+            knowledge_base_id=kb.id,
+            knowledge_base_version_id=base_version.id,
+            document_id=document.id,
+            concept_id="sources/policy",
+            concept_type="Source Document",
+            title="政策文档",
+            content_md="---\ntype: Source Document\ntitle: 政策文档\n---\n\n# Summary\n原文。",
+            source_refs_json=[{"document_id": document.id, "filename": document.filename}],
+        )
+        db.add(document)
+        db.add(concept)
+        db.commit()
+
+        updated = upsert_okf_concept(
+            kb.id,
+            concept.concept_id,
+            KnowledgeConceptUpdateRequest(
+                tenant_id="tenant_demo",
+                document_id=document.id,
+                content_md="---\ntype: Source Document\ntitle: 政策文档-新标题\n---\n\n# Summary\n原文。",
+            ),
+            agent_id=agent.id,
+            db=db,
+            current_user=_admin_user(),
+        )
+
+        assert updated.title == "政策文档-新标题"
+        assert updated.document_id != document.id
+        assert updated.source_refs == [{"document_id": updated.document_id, "filename": "policy.md"}]
+        db.refresh(concept)
+        assert concept.source_refs_json == [{"document_id": document.id, "filename": "policy.md"}]
 
 
 def test_knowledge_branch_write_normalizes_nested_branch_base_version() -> None:
