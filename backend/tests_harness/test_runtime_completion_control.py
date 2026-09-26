@@ -264,6 +264,31 @@ def test_native_conversation_result_uses_v2_status_and_slot_normalization(db, st
     assert not cap.slot.closed, "a native reply is not a control-tool submission"
 
 
+@pytest.mark.parametrize("extra_arguments", ["{}", "invalid-json", ["unexpected"]])
+def test_step_result_extensions_do_not_become_tool_action_arguments(db, extra_arguments):
+    from app.core.harness_agent import HarnessAction, finish_execution_result
+    from staffdeck_harness.bridge.task_agent import HarnessV3TaskAgent
+    from staffdeck_harness.interactions.pipeline_host import PipelineState
+
+    cap = _host(db, CompositionCompiler(hooks=()).compile(_staff()))
+    cap.slot.allowed_next_steps = frozenset({"finalize_plan"})
+    req = TaskRequirement(task_frame_id="tf1", kind="sop", goal="confirm")
+    payload = {"status": "completed", "reply_fragment": "已确认。",
+               "slot_updates": {"confirmed": True}, "next_step_id": "finalize_plan",
+               "arguments": extra_arguments}
+    execution = ExecutionHost(cap, req)
+    result, _ = execution.invoke_proxy("submit_step_result", payload, _ctx())
+    assert result.success
+    runner = HarnessV3TaskAgent.__new__(HarnessV3TaskAgent)
+    runner._host = cap
+    actual = runner._result(req, cap.slot, PipelineState(cap.slot.snapshot), "", "stop", 1, [], [])
+    expected = finish_execution_result(req, HarnessAction(
+        action="finish", status="completed", reply_fragment="已确认。",
+        slot_updates={"confirmed": True}, next_step_id="finalize_plan"
+    ), [], [], [], [], action_count=1)
+    assert actual.model_dump() == expected.model_dump()
+
+
 def test_marker_only_checkpoint_recovers_only_its_own_sop_public_history(db):
     from app.core.task_frame_store import TaskFrameStore
     from app.db.models import ChatSession, HarnessTaskFrameRecord, HarnessRunRecord, Message

@@ -877,7 +877,11 @@ class HarnessV3TaskAgent:
             missing.extend(f"knowledge_search:{rid}" for rid in requirement.required_knowledge_base_ids if rid not in kb_ids)
             if missing:
                 return self._failed(requirement, "REQUIRED_CAPABILITY_MISSING", "未成功完成必需能力：" + "、".join(missing), actions=actions)
-        action = HarnessAction.model_validate({**fin, "action": "finish", "reply_fragment": reply})
+        # A step submission is a STEP_RESULT_SCHEMA payload, not a tool action.
+        # Its allowed extension fields must not become HarnessAction.arguments.
+        from staffdeck_harness.sop.submission import STEP_RESULT_SCHEMA
+        completion = {key: value for key, value in fin.items() if key in STEP_RESULT_SCHEMA["properties"]}
+        action = HarnessAction.model_validate({**completion, "action": "finish", "reply_fragment": reply})
         result = finish_execution_result(requirement, action,
             list(host.citations) if host is not None else self._citations(events, state),
             list(host.evidence) if host is not None else self._evidence(events),
