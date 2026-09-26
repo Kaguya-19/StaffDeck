@@ -257,10 +257,10 @@ def _step_prompt(requirement: TaskRequirement, state: PipelineState, decision_co
                     "只有仍缺少要求字段且无法从本轮输入可靠提取时，才提交 status=\"awaiting_user\" 并具体提问；"
                     "等待补充信息时不得填写 next_step_id，必须保留当前收集节点。"
                 )
-            elif step.get("type") == "response":
+            elif step.get("type") in {"response", "knowledge_query"}:
                 parts.append(
                     "# 当前节点边界\n"
-                    "当前 response 节点只负责生成本节点 instruction 要求的结果。完成正文后必须调用 "
+                    "当前 response/knowledge_query 节点只负责完成本节点 instruction 与必需能力要求。完成后必须调用 "
                     "submit_step_result 提交 status=\"completed\"，并选择允许的 next_step_id；"
                     "不要因为后续节点需要用户确认就把本节点提前提交为 awaiting_user。"
                     "需要负责人确认时，应先完成本节点，再路由到图中明确的 handoff 节点。"

@@ -94,6 +94,37 @@ def test_missing_slots_wait_cannot_advance_and_can_be_repaired(db):
     assert cap.slot.finish["slot_updates"] == {"project_goal": "交付新版本"}
 
 
+@pytest.mark.parametrize("node_type", ["response", "knowledge_query"])
+def test_output_node_without_missing_fields_rejects_premature_wait(db, node_type):
+    cap = _host(db, CompositionCompiler(hooks=()).compile(_staff()))
+    cap.slot.allowed_next_steps = frozenset({"approval"})
+    req = TaskRequirement(task_frame_id="tf1", kind="sop", goal="evaluate",
+        sop_context={"step": {"type": node_type, "expected_user_info": [],
+                              "allowed_actions": ["continue_flow"]}})
+    execution = ExecutionHost(cap, req)
+    result, _ = execution.invoke_proxy("submit_step_result",
+        {"status": "awaiting_user", "reply_fragment": "请负责人确认。"}, _ctx())
+    assert result.error["code"] == "STEP_MUST_ADVANCE"
+    assert not cap.slot.closed
+    result, _ = execution.invoke_proxy("submit_step_result",
+        {"status": "completed", "reply_fragment": "影响评估草案。", "next_step_id": "approval"}, _ctx())
+    assert result.success and cap.slot.finish["next_step_id"] == "approval"
+
+
+@pytest.mark.parametrize("declared_wait", [False, True])
+def test_output_node_preserves_legitimate_wait(db, declared_wait):
+    cap = _host(db, CompositionCompiler(hooks=()).compile(_staff()))
+    cap.slot.allowed_next_steps = frozenset({"approval"})
+    req = TaskRequirement(task_frame_id="tf1", kind="sop", goal="evaluate",
+        expected_slots=[] if declared_wait else ["decision"],
+        sop_context={"step": {"type": "knowledge_query",
+            "expected_user_info": [] if declared_wait else ["decision"],
+            "allowed_actions": ["ask_user"] if declared_wait else ["continue_flow"]}})
+    result, _ = ExecutionHost(cap, req).invoke_proxy("submit_step_result",
+        {"status": "awaiting_user", "reply_fragment": "请补充决策信息。"}, _ctx())
+    assert result.success and cap.slot.finish["status"] == "awaiting_user"
+
+
 def test_handoff_control_is_an_accepted_sop_completion(db):
     cap = _host(db, CompositionCompiler(hooks=()).compile(_staff()))
     execution = ExecutionHost(
@@ -221,7 +252,7 @@ def test_collect_prompt_prioritizes_node_boundary_and_advancement():
         [],
         "",
     )
-    assert "response 节点只负责生成本节点" in response_prompt
+    assert "response/knowledge_query 节点只负责完成本节点" in response_prompt
     assert "不要因为后续节点需要用户确认就把本节点提前提交为 awaiting_user" in response_prompt
 
 

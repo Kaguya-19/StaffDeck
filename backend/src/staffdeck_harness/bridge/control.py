@@ -77,6 +77,21 @@ class StepCompletionPort:
         step = (self.requirement.sop_context or {}).get("step")
         if (
             isinstance(step, dict)
+            and step.get("type") in {"response", "knowledge_query"}
+            and slot.allowed_next_steps
+            and arguments.get("status") == "awaiting_user"
+            and not {"ask_user", "ask_missing"}.intersection(step.get("allowed_actions") or [])
+        ):
+            from app.session.slot_policy import missing_step_slots
+
+            if not missing_step_slots(self.requirement, arguments.get("slot_updates")):
+                return ModuleResult.fail(
+                    "STEP_MUST_ADVANCE",
+                    "当前节点没有待补字段。请完成本节点要求并提交 completed，选择允许的下一节点；"
+                    "后续人工确认必须在图中声明的 handoff 节点执行，不得在此提前 awaiting_user。",
+                )
+        if (
+            isinstance(step, dict)
             and step.get("type") == "collect_info"
             and (step.get("expected_user_info") or [])
             and slot.allowed_next_steps
