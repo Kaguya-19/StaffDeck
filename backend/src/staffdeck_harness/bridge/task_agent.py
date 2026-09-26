@@ -254,7 +254,8 @@ def _step_prompt(requirement: TaskRequirement, state: PipelineState, decision_co
                     + "允许的下一节点：" + ("、".join(transitions) or "无") + "\n"
                     "如果本轮用户输入已提供全部要求字段，必须调用 submit_step_result，提交 status=\"completed\"、"
                     "slot_updates，并选择允许的 next_step_id；不得用 status=\"awaiting_user\" 提前暂停。"
-                    "只有仍缺少要求字段且无法从本轮输入可靠提取时，才提交 status=\"awaiting_user\" 并具体提问。"
+                    "只有仍缺少要求字段且无法从本轮输入可靠提取时，才提交 status=\"awaiting_user\" 并具体提问；"
+                    "等待补充信息时不得填写 next_step_id，必须保留当前收集节点。"
                 )
             elif step.get("type") == "response":
                 parts.append(

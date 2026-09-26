@@ -68,6 +68,32 @@ def test_collect_step_cannot_pause_when_expected_slots_are_filled(db):
     assert not cap.slot.closed
 
 
+def test_missing_slots_wait_cannot_advance_and_can_be_repaired(db):
+    cap = _host(db, CompositionCompiler(hooks=()).compile(_staff()))
+    cap.slot.allowed_next_steps = frozenset({"build_plan"})
+    req = TaskRequirement(
+        task_frame_id="tf1", kind="sop", goal="collect",
+        expected_slots=["project_goal", "current_stage", "known_blockers"],
+        sop_context={"step": {"node_id": "n1_collect", "type": "collect_info",
+                              "expected_user_info": ["project_goal", "current_stage", "known_blockers"]}},
+        allowed_transitions=[{"next_node_id": "build_plan"}],
+    )
+    execution = ExecutionHost(cap, req)
+    arguments = {"status": "awaiting_user", "reply_fragment": "请补充阶段和阻塞。",
+                 "slot_updates": {"project_goal": "交付新版本"}, "next_step_id": "build_plan"}
+    result, _ = execution.invoke_proxy("submit_step_result", arguments, _ctx())
+    assert not result.success
+    assert result.error["code"] == "AWAITING_USER_CANNOT_ADVANCE"
+    assert cap.slot.finish is None and not cap.slot.closed
+    result, _ = execution.invoke_proxy(
+        "submit_step_result", {**arguments, "next_step_id": None}, _ctx()
+    )
+    assert result.success and cap.slot.closed
+    assert cap.slot.finish["status"] == "awaiting_user"
+    assert cap.slot.finish["next_step_id"] is None
+    assert cap.slot.finish["slot_updates"] == {"project_goal": "交付新版本"}
+
+
 def test_handoff_control_is_an_accepted_sop_completion(db):
     cap = _host(db, CompositionCompiler(hooks=()).compile(_staff()))
     execution = ExecutionHost(

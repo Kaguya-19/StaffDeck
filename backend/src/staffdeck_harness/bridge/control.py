@@ -68,6 +68,12 @@ class StepCompletionPort:
             capability_results=host.results, citations=host.citations, evidence=host.evidence)
         if not result.success:
             return result
+        if arguments.get("status") == "awaiting_user" and result.data.get("next_step_id"):
+            return ModuleResult.fail(
+                "AWAITING_USER_CANNOT_ADVANCE",
+                "等待用户补充信息时必须保留当前节点，请移除 next_step_id；"
+                "信息齐全后再提交 completed 并选择下一节点。",
+            )
         step = (self.requirement.sop_context or {}).get("step")
         if (
             isinstance(step, dict)
