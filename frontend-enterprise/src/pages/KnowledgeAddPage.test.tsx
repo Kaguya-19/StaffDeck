@@ -31,17 +31,17 @@ function renderWithDiscoveries(discoveries: () => unknown[]) {
     isEnterpriseAdmin: () => true,
     loadEmployeeDirectory: async () => [],
     agentScope: { read: () => '', persist: vi.fn(), clear: vi.fn(), emit: vi.fn() },
-    visibleEmployeeAgents: (agents) => agents,
+    visibleEmployeeAgents: (agents: unknown[]) => agents,
     canManageEmployeeAgent: () => true,
     openGalleryAgentId: 'overall',
     openGalleryImportSourceOptions: () => [],
     resourceCreatorName: () => '',
-    renderMarkdownBlocks: (value) => value,
+    renderMarkdownBlocks: (value: string) => value,
     getDateLocale: () => 'zh-CN',
   };
   const view = render(
     <KnowledgePageHostProvider value={host}>
-      <KnowledgeAddPage currentUser={{ id: 'admin', is_admin: true }} />
+      <KnowledgeAddPage currentUser={{ id: 'admin', tenant_id: 'tenant_demo', username: 'admin', role: 'admin' }} />
     </KnowledgePageHostProvider>,
   );
   const discoveryCalls = () => get.mock.calls.filter(([path]) => path.startsWith('/api/enterprise/knowledge/discoveries?')).length;
