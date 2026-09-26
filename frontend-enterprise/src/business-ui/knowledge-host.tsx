@@ -1,11 +1,11 @@
 import type { Host } from '@staffdeck/business-ui/KnowledgePageHost';
+import { BusinessDataTable as DataTable } from '@staffdeck/business-ui/SkillsPageHost';
 import { api, TENANT_ID } from '../api/client';
 import { notify } from '@/components/ui/app-toast';
 import AppHeader from '@/components/AppHeader';
 import CapabilityScopeLoading from '@/components/CapabilityScopeLoading';
 import { CapabilityScopeBadge, CapabilityScopeControl, normalizeCapabilityScope } from '@/components/CapabilityScopeControl';
 import { ConfirmDialog } from '@/components/ConfirmDialog';
-import { DataTable } from '@/components/DataTable';
 import { ModelConfigDropdown } from '@/components/ModelConfigDropdown';
 import { Paginator } from '@/components/Paginator';
 import { ResourceImportDialog } from '@/components/ResourceImportDialog';

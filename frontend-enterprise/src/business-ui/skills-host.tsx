@@ -1,9 +1,9 @@
 import type { SkillsPageHost } from '@staffdeck/business-ui/SkillsPageHost';
+import { BusinessDataTable as DataTable } from '@staffdeck/business-ui/SkillsPageHost';
 import { api, TENANT_ID } from '../api/client';
 import AppHeader from '@/components/AppHeader';
 import { notify } from '@/components/ui/app-toast';
 import { ConfirmDialog } from '@/components/ConfirmDialog';
-import { DataTable } from '@/components/DataTable';
 import { DetailField } from '@/components/DetailField';
 import { Paginator } from '@/components/Paginator';
 import { ResourceImportDialog } from '@/components/ResourceImportDialog';
