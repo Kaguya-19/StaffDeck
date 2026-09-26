@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 
-import { render, screen } from '@testing-library/react';
-import { describe, expect, it } from 'vitest';
+import { fireEvent, render, screen } from '@testing-library/react';
+import { describe, expect, it, vi } from 'vitest';
 
 import { DataTable, type DataTableColumn } from './DataTable';
 
@@ -43,5 +43,27 @@ describe('DataTable', () => {
     expect(actionCell?.className).toContain('right-0');
     expect(actionCell?.className).toContain('bg-white');
     expect(screen.getByRole('columnheader', { name: '名称' }).className).not.toContain('sticky');
+  });
+
+  it('preserves row selection, render index, striped fill and bordered cells', () => {
+    const row = { id: 'sop-2', name: 'Review' };
+    const onRowClick = vi.fn();
+    render(<DataTable
+      columns={[
+        { key: 'name', title: '名称', dataIndex: 'name' },
+        { key: 'index', title: '序号', render: (_item: Row, index: number) => index + 1 },
+      ]}
+      data={[{ id: 'sop-1', name: 'Draft' }, row]}
+      rowKey={(item) => item.id}
+      onRowClick={onRowClick}
+      striped bordered size="compact"
+    />);
+
+    const selectedRow = screen.getByRole('row', { name: 'Review 2' });
+    expect(selectedRow.className).toContain('bg-[#fbfbfb]');
+    expect(selectedRow.querySelector('td')?.className).toContain('border');
+    expect(selectedRow.querySelector('td')?.className).toContain('min-h-[46px]');
+    fireEvent.click(selectedRow);
+    expect(onRowClick).toHaveBeenCalledExactlyOnceWith(row, 1);
   });
 });

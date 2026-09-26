@@ -1,5 +1,5 @@
 import type { Host } from '@staffdeck/business-ui/KnowledgePageHost';
-import { BusinessDataTable as DataTable } from '@staffdeck/business-ui/SkillsPageHost';
+import { DataTable } from '@/components/DataTable';
 import { api, TENANT_ID } from '../api/client';
 import { notify } from '@/components/ui/app-toast';
 import AppHeader from '@/components/AppHeader';

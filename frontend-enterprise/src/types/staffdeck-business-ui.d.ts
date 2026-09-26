@@ -36,6 +36,7 @@ declare module '@staffdeck/business-ui/SkillsPageHost' {
   export type SkillsPageHost = Record<string, any>;
   export const SkillsPageHostProvider: ComponentType<{ value: SkillsPageHost; children: ReactNode }>;
   export const BusinessDataTable: ComponentType<any>;
+  export type DataTablePrimitives = Record<'Table' | 'TableHeader' | 'TableBody' | 'TableRow' | 'TableHead' | 'TableCell', ComponentType<any>>;
   export type ImportSourceOption = { value: string; label: string };
   export type ImportChoiceItem = { id: string; label: ReactNode };
   export type ResourceImportDialogProps = {
