@@ -52,7 +52,7 @@ from app.db.models import (
     User,
 )
 from app.db.seed import EXCHANGE_SKILL, REFUND_SKILL, _publish_seeded_system_resources
-from app.knowledge.okf import upsert_concepts
+from app.knowledge.okf import parse_okf_markdown, upsert_concepts
 from app.knowledge.schema import KnowledgeBaseUpdateRequest, KnowledgeConceptUpdateRequest
 from app.skills.skill_schema import SkillCard, SkillUpdateRequest
 
@@ -1749,6 +1749,9 @@ def test_knowledge_branch_write_clones_existing_wiki_before_appending_concept() 
 
 
 def test_okf_title_edit_preserves_cloned_source_refs() -> None:
+    body = "# Summary\n原文。[来源](ultrarag://knowledge/documents/doc_base)\n\n# Citations\n[1] [来源](ultrarag://knowledge/documents/doc_base)"
+    original_md = f"---\ntype: Source Document\ntitle: 政策文档\n---\n\n{body}"
+    edited_md = original_md.replace("title: 政策文档", "title: 政策文档-新标题")
     with _test_session() as db:
         db.add(Tenant(id="tenant_demo", name="Demo"))
         agent = AgentProfile(id="agent_branch", tenant_id="tenant_demo", name="客服分支")
@@ -1774,7 +1777,7 @@ def test_okf_title_edit_preserves_cloned_source_refs() -> None:
             concept_id="sources/policy",
             concept_type="Source Document",
             title="政策文档",
-            content_md="---\ntype: Source Document\ntitle: 政策文档\n---\n\n# Summary\n原文。",
+            content_md=original_md,
             source_refs_json=[{"document_id": document.id, "filename": document.filename}],
         )
         db.add(document)
@@ -1787,7 +1790,7 @@ def test_okf_title_edit_preserves_cloned_source_refs() -> None:
             KnowledgeConceptUpdateRequest(
                 tenant_id="tenant_demo",
                 document_id=document.id,
-                content_md="---\ntype: Source Document\ntitle: 政策文档-新标题\n---\n\n# Summary\n原文。",
+                content_md=edited_md,
             ),
             agent_id=agent.id,
             db=db,
@@ -1795,10 +1798,160 @@ def test_okf_title_edit_preserves_cloned_source_refs() -> None:
         )
 
         assert updated.title == "政策文档-新标题"
+        saved_body = parse_okf_markdown(concept.concept_id, updated.content_md).body
+        expected_body = parse_okf_markdown(concept.concept_id, edited_md).body
+        assert saved_body == expected_body
+        assert updated.links
+        assert updated.citations
+        assert updated.links[0]["target"] == "ultrarag://knowledge/documents/doc_base"
+        assert updated.citations[0]["target"] == "ultrarag://knowledge/documents/doc_base"
         assert updated.document_id != document.id
-        assert updated.source_refs == [{"document_id": updated.document_id, "filename": "policy.md"}]
+        assert updated.source_refs == [
+            {"document_id": updated.document_id, "filename": "policy.md"}
+        ]
         db.refresh(concept)
+        assert concept.content_md == original_md
         assert concept.source_refs_json == [{"document_id": document.id, "filename": "policy.md"}]
+
+
+def test_okf_overall_edit_keeps_empty_refs_and_new_concept_scope() -> None:
+    with _test_session() as db:
+        db.add(Tenant(id="tenant_demo", name="Demo"))
+        db.add(AgentProfile(
+            id="agent_overall", tenant_id="tenant_demo", name="开放广场", is_overall=True
+        ))
+        kb = KnowledgeBase(id="kb_demo", tenant_id="tenant_demo", name="业务资料")
+        other_kb = KnowledgeBase(id="kb_other", tenant_id="tenant_demo", name="其他资料")
+        db.add(kb)
+        db.add(other_kb)
+        ensure_open_gallery_binding(db, "tenant_demo", "knowledge_base", kb.id, "active")
+        ensure_open_gallery_binding(db, "tenant_demo", "knowledge_base", other_kb.id, "active")
+        version = ensure_knowledge_base_version(db, kb, "1.0.0")
+        other_version = ensure_knowledge_base_version(db, other_kb, "1.0.0")
+        db.add(KnowledgeConcept(
+            tenant_id="tenant_demo",
+            knowledge_base_id=kb.id,
+            knowledge_base_version_id=version.id,
+            concept_id="topics/shared-name",
+            concept_type="Topic",
+            title="原题",
+            content_md="---\ntype: Topic\ntitle: 原题\n---\n\n原文。",
+            source_refs_json=[{"source_path": "kb-demo.md"}],
+        ))
+        db.add(KnowledgeConcept(
+            tenant_id="tenant_demo",
+            knowledge_base_id=kb.id,
+            knowledge_base_version_id=version.id,
+            concept_id="topics/empty-source",
+            concept_type="Topic",
+            title="无来源",
+            content_md="---\ntype: Topic\ntitle: 无来源\n---\n\n原文。",
+            source_refs_json=[],
+        ))
+        db.add(KnowledgeConcept(
+            tenant_id="tenant_demo",
+            knowledge_base_id=other_kb.id,
+            knowledge_base_version_id=other_version.id,
+            concept_id="topics/shared-name",
+            concept_type="Topic",
+            title="其他范围",
+            content_md="---\ntype: Topic\ntitle: 其他范围\n---\n\n其他正文。",
+            source_refs_json=[{"source_path": "other-kb.md"}],
+        ))
+        db.commit()
+
+        edited = upsert_okf_concept(
+            kb.id,
+            "topics/shared-name",
+            KnowledgeConceptUpdateRequest(
+                tenant_id="tenant_demo",
+                content_md="---\ntype: Topic\ntitle: 新题\n---\n\n原文。",
+            ),
+            agent_id=None,
+            db=db,
+            current_user=_admin_user(),
+        )
+        edited_empty = upsert_okf_concept(
+            kb.id,
+            "topics/empty-source",
+            KnowledgeConceptUpdateRequest(
+                tenant_id="tenant_demo",
+                content_md="---\ntype: Topic\ntitle: 无来源-新题\n---\n\n原文。",
+            ),
+            agent_id=None,
+            db=db,
+            current_user=_admin_user(),
+        )
+        created = upsert_okf_concept(
+            kb.id,
+            "topics/new",
+            KnowledgeConceptUpdateRequest(
+                tenant_id="tenant_demo",
+                content_md="---\ntype: Topic\ntitle: 新节点\n---\n\n新正文。",
+            ),
+            agent_id=None,
+            db=db,
+            current_user=_admin_user(),
+        )
+
+        assert edited.title == "新题"
+        assert edited.source_refs == [{"source_path": "kb-demo.md"}]
+        assert edited_empty.source_refs == []
+        assert created.source_refs == []
+        other = db.exec(select(KnowledgeConcept).where(
+            KnowledgeConcept.knowledge_base_id == other_kb.id,
+            KnowledgeConcept.concept_id == "topics/shared-name",
+        )).one()
+        assert other.source_refs_json == [{"source_path": "other-kb.md"}]
+
+
+def test_okf_edit_rejects_user_outside_agent_or_tenant_scope() -> None:
+    with _test_session() as db:
+        db.add(Tenant(id="tenant_demo", name="Demo"))
+        db.add(Tenant(id="tenant_other", name="Other"))
+        agent = AgentProfile(
+            id="agent_other", tenant_id="tenant_demo", name="其他员工",
+            metadata_json={"owner_user_id": "user_other"},
+        )
+        kb = KnowledgeBase(id="kb_demo", tenant_id="tenant_demo", name="业务资料")
+        db.add(agent)
+        db.add(kb)
+        db.commit()
+        user = User(
+            id="user_member", tenant_id="tenant_demo", username="member",
+            role="member", password_hash="test",
+        )
+
+        with pytest.raises(HTTPException) as denied:
+            upsert_okf_concept(
+                kb.id,
+                "topics/protected",
+                KnowledgeConceptUpdateRequest(
+                    tenant_id="tenant_demo",
+                    content_md="---\ntype: Topic\ntitle: 越权编辑\n---\n\n正文。",
+                ),
+                agent_id=agent.id,
+                db=db,
+                current_user=user,
+            )
+
+        assert denied.value.status_code == 403
+        with pytest.raises(HTTPException) as wrong_tenant:
+            upsert_okf_concept(
+                kb.id,
+                "topics/protected",
+                KnowledgeConceptUpdateRequest(
+                    tenant_id="tenant_other",
+                    content_md="---\ntype: Topic\ntitle: 越权编辑\n---\n\n正文。",
+                ),
+                agent_id=None,
+                db=db,
+                current_user=_admin_user(),
+            )
+        assert wrong_tenant.value.status_code == 404
+        assert db.exec(select(KnowledgeConcept).where(
+            KnowledgeConcept.knowledge_base_id == kb.id,
+        )).all() == []
 
 
 def test_knowledge_branch_write_normalizes_nested_branch_base_version() -> None:
