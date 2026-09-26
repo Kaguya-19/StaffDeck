@@ -111,21 +111,125 @@ function DefaultSelectValue({ placeholder }: any) { const state = useContext(Sel
 function DefaultSelectContent({ children, className }: any) { const state = useContext(SelectContext); return state?.open ? <div className={joinClasses('absolute left-0 top-full z-50 mt-1 min-w-full rounded border bg-white p-1 shadow-lg dark:bg-neutral-900', className)}>{children}</div> : null; }
 function DefaultSelectItem({ value, children, className }: any) { const state = useContext(SelectContext); return <button type="button" className={joinClasses('block w-full rounded px-2 py-1.5 text-left text-sm hover:bg-neutral-100 dark:hover:bg-neutral-800', className)} onClick={() => { state?.onValueChange?.(value); state?.setOpen(false); }}>{children}</button>; }
 
-export function BusinessResourceImportDialog({ open, onClose, onSubmit, sources = [], items = [], sourceId, onSourceChange, selectedIds = [], onSelectedChange, title, icon, loading, targetLabel = '复制到', targetPlaceholder, targets, targetId, onTargetChange, sourcePlaceholder = '选择来源', itemsLabel, emptyText, emptySourceText = '请先选择复制来源', note, submitText = '复制' }: any) {
+export type ImportSourceOption = { value: string; label: string };
+export type ImportChoiceItem = { id: string; label: ReactNode };
+
+export type ResourceImportDialogProps = {
+  open: boolean;
+  loading: boolean;
+  icon: ReactNode;
+  title: string;
+  targetPlaceholder?: string;
+  targetLabel?: string;
+  targets?: ImportSourceOption[];
+  targetId?: string;
+  sourcePlaceholder: string;
+  sources: ImportSourceOption[];
+  sourceId: string;
+  itemsLabel: string;
+  items: ImportChoiceItem[];
+  selectedIds: string[];
+  emptyText: string;
+  emptySourceText?: string;
+  note: ReactNode;
+  submitText?: string;
+  onTargetChange?: (value: string) => void;
+  onSourceChange: (value: string) => void;
+  onSelectedChange: (ids: string[]) => void;
+  onClose: () => void;
+  onSubmit: () => void;
+};
+
+export type ResourceImportPrimitives = {
+  Dialog: HostComponent;
+  DialogContent: HostComponent;
+  DialogTitle: HostComponent;
+  Select: HostComponent;
+  SelectTrigger: HostComponent;
+  SelectValue: HostComponent;
+  SelectContent: HostComponent;
+  SelectItem: HostComponent;
+  Checkbox: HostComponent;
+  Button: HostComponent;
+};
+
+function DefaultCheckbox({ checked, onCheckedChange }: any) {
+  return <input type="checkbox" checked={checked} onChange={(event) => onCheckedChange?.(event.target.checked)} />;
+}
+
+export const defaultResourceImportPrimitives: ResourceImportPrimitives = {
+  Dialog: DefaultDialog, DialogContent: DefaultDialogContent, DialogTitle: DefaultDialogTitle,
+  Select: DefaultSelect, SelectTrigger: DefaultSelectTrigger, SelectValue: DefaultSelectValue,
+  SelectContent: DefaultSelectContent, SelectItem: DefaultSelectItem,
+  Checkbox: DefaultCheckbox, Button: DefaultButton,
+};
+
+const IMPORT_SELECT_TRIGGER_CLASS = 'h-[34px] data-[size=default]:h-[34px] rounded-[10px] border-[0.5px] border-[#e3e7f1] bg-white text-[12px] text-[#464c5e] shadow-none data-placeholder:text-[#858b9c] hover:border-[#cbd3e6] focus-visible:border-[#18181a] focus-visible:ring-0';
+
+export function BusinessResourceImportDialog({
+  primitives = defaultResourceImportPrimitives,
+  open, loading, icon, title, targetPlaceholder, targetLabel = '复制到', targets, targetId,
+  sourcePlaceholder, sources, sourceId, itemsLabel, items, selectedIds, emptyText,
+  emptySourceText = '请先选择复制来源', note, submitText = '复制',
+  onTargetChange, onSourceChange, onSelectedChange, onClose, onSubmit,
+}: ResourceImportDialogProps & { primitives?: ResourceImportPrimitives }) {
+  const { Dialog, DialogContent, DialogTitle, Select, SelectTrigger, SelectValue, SelectContent, SelectItem, Checkbox, Button } = primitives;
+  const showTargetSelect = Boolean(targets && onTargetChange);
+  const effectiveSourceId = sourceId || (sources.length === 1 ? sources[0].value : '');
+
   useEffect(() => {
-    if (open && !sourceId && sources.length === 1) onSourceChange?.(sources[0].value);
-  }, [open, sourceId, sources, onSourceChange]);
-  if (!open) return null;
-  return <div role="dialog" aria-modal="true" className="fixed inset-0 z-50 grid place-items-center bg-black/30 p-4"><section className="flex max-h-[calc(100dvh-4rem)] w-[min(640px,100%)] flex-col rounded-[14px] bg-white p-5 shadow-xl dark:bg-neutral-900">
-    <h2 className="flex items-center gap-2 text-sm font-medium">{icon}{title}</h2>
-    <div className="mt-4 min-h-0 space-y-4 overflow-y-auto">
-      {targets && onTargetChange && <label className="block text-xs">{targetLabel}<select className="mt-1 w-full rounded border p-2" value={targetId || ''} onChange={(event) => onTargetChange(event.target.value)}><option value="">{targetPlaceholder || targetLabel}</option>{targets.map((target: any) => <option key={target.value} value={target.value}>{target.label}</option>)}</select></label>}
-      <label className="block text-xs">复制来源<select className="mt-1 w-full rounded border p-2" value={sourceId || (sources.length === 1 ? sources[0].value : '')} onChange={(event) => onSourceChange?.(event.target.value)}><option value="" disabled>{sourcePlaceholder}</option>{sources.map((source: any) => <option key={source.value} value={source.value}>{source.label}</option>)}</select></label>
-      <div><span className="text-xs">{itemsLabel}</span><div className="mt-1 max-h-56 space-y-1 overflow-auto rounded border p-2">{items.length ? items.map((item: any) => <label key={item.id} className="flex cursor-pointer gap-2 text-sm"><input type="checkbox" checked={selectedIds.includes(item.id)} onChange={(event) => onSelectedChange?.(event.target.checked ? [...selectedIds, item.id] : selectedIds.filter((id: string) => id !== item.id))} />{item.label}</label>) : <p className="py-4 text-center text-xs text-neutral-500">{sourceId ? emptyText : emptySourceText}</p>}</div></div>
-      {note && <p className="text-xs text-neutral-500">{note}</p>}
-    </div>
-    <div className="mt-5 flex justify-end gap-3"><button type="button" onClick={onClose}>取消</button><button type="button" disabled={loading} onClick={onSubmit}>{submitText}</button></div>
-  </section></div>;
+    if (!open || sourceId || sources.length !== 1) return;
+    onSourceChange(sources[0].value);
+  }, [onSourceChange, open, sourceId, sources]);
+
+  const toggle = (id: string, checked: boolean) => {
+    onSelectedChange(checked ? [...selectedIds, id] : selectedIds.filter((value) => value !== id));
+  };
+
+  return <Dialog open={open} onOpenChange={(next: boolean) => !next && onClose()}>
+    <DialogContent aria-describedby={undefined} className="flex max-h-[calc(100dvh-4rem)] w-[calc(100%-2rem)] flex-col gap-[16px] overflow-hidden rounded-[14px] px-[20px] py-[16px] sm:max-w-[640px]">
+      <div className="flex items-center gap-[6px] px-[12px] text-[#757f9c]">
+        {icon}
+        <DialogTitle className="text-[14px] font-normal leading-none text-[#757f9c]">{title}</DialogTitle>
+      </div>
+      <div className="flex min-h-0 flex-1 flex-col gap-[14px] overflow-y-auto px-[12px]">
+        {showTargetSelect && <div className="flex flex-col gap-[6px]">
+          <span className="text-[11px] font-semibold text-[#858b9c]">{targetLabel}</span>
+          <Select value={targetId || undefined} onValueChange={onTargetChange}>
+            <SelectTrigger className={joinClasses(IMPORT_SELECT_TRIGGER_CLASS, 'w-full')}>
+              <SelectValue placeholder={targetPlaceholder || targetLabel} />
+            </SelectTrigger>
+            <SelectContent>{(targets || []).map((item) => <SelectItem key={item.value} value={item.value}>{item.label}</SelectItem>)}</SelectContent>
+          </Select>
+        </div>}
+        <div className="flex flex-col gap-[6px]">
+          <span className="text-[11px] font-semibold text-[#858b9c]">复制来源</span>
+          <div className="relative">
+            <select value={effectiveSourceId} onChange={(event) => onSourceChange(event.target.value)} className={joinClasses(IMPORT_SELECT_TRIGGER_CLASS, 'w-full appearance-none px-3 pr-9 outline-none disabled:cursor-not-allowed disabled:opacity-60')}>
+              <option value="" disabled>{sourcePlaceholder}</option>
+              {sources.map((item) => <option key={item.value} value={item.value}>{item.label}</option>)}
+            </select>
+            <ChevronDown className="pointer-events-none absolute right-3 top-1/2 size-4 -translate-y-1/2 text-[#858b9c]" />
+          </div>
+        </div>
+        <div className="flex flex-col gap-[6px]">
+          <span className="text-[11px] font-semibold text-[#858b9c]">{itemsLabel}</span>
+          <div className="max-h-[300px] overflow-y-auto rounded-[10px] border border-[#eef0f4] p-[6px]">
+            {items.length === 0 ? <div className="py-[28px] text-center text-[12px] text-[#858b9c]">{sourceId ? emptyText : emptySourceText}</div>
+              : items.map((item) => <label key={item.id} className="flex cursor-pointer items-center gap-[10px] rounded-[8px] px-[8px] py-[7px] hover:bg-[#f6f6f6]">
+                <Checkbox checked={selectedIds.includes(item.id)} onCheckedChange={(checked: boolean) => toggle(item.id, checked === true)} />
+                <span className="min-w-0 flex-1 truncate text-[12px] text-[#18181a]">{item.label}</span>
+              </label>)}
+          </div>
+        </div>
+        <p className="text-[12px] leading-[1.6] text-[#858b9c]">{note}</p>
+      </div>
+      <div className="flex items-center justify-end gap-[8px] px-[12px]">
+        <Button variant="outline" disabled={loading} onClick={onClose} className="h-[32px] w-[80px] rounded-[10px] border-[#e3e7f1] bg-white px-[12px] text-[14px] font-normal text-[#464c5e] hover:border-[#e3e7f1] hover:bg-[#f6f6f6] hover:text-[#18181a]">取消</Button>
+        <Button disabled={loading} onClick={onSubmit} className="h-[32px] w-[80px] rounded-[10px] bg-[#18181a] px-[12px] text-[14px] font-normal text-white hover:bg-[#303030]">{submitText}</Button>
+      </div>
+    </DialogContent>
+  </Dialog>;
 }
 
 function DefaultHostIcon({ name, ...props }: { name: string; [key: string]: any }) { const icons: Record<string, any> = { IconAdd: FilePlus2, IconChevronDown: ChevronDown, IconClear: Search, IconClipboard: Clipboard, IconEdit: Edit3, IconHistory: History, IconMore: MoreHorizontal, IconRefresh: RefreshCw, IconSearch: Search, IconSkill: FileText, IconTrash: Trash2 }; const Icon = icons[name] || FileText; return <Icon {...props} />; }

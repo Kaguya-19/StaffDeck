@@ -36,6 +36,19 @@ declare module '@staffdeck/business-ui/SkillsPageHost' {
   export type SkillsPageHost = Record<string, any>;
   export const SkillsPageHostProvider: ComponentType<{ value: SkillsPageHost; children: ReactNode }>;
   export const BusinessDataTable: ComponentType<any>;
+  export type ImportSourceOption = { value: string; label: string };
+  export type ImportChoiceItem = { id: string; label: ReactNode };
+  export type ResourceImportDialogProps = {
+    open: boolean; loading: boolean; icon: ReactNode; title: string;
+    targetPlaceholder?: string; targetLabel?: string; targets?: ImportSourceOption[]; targetId?: string;
+    sourcePlaceholder: string; sources: ImportSourceOption[]; sourceId: string;
+    itemsLabel: string; items: ImportChoiceItem[]; selectedIds: string[];
+    emptyText: string; emptySourceText?: string; note: ReactNode; submitText?: string;
+    onTargetChange?: (value: string) => void; onSourceChange: (value: string) => void;
+    onSelectedChange: (ids: string[]) => void; onClose: () => void; onSubmit: () => void;
+  };
+  export type ResourceImportPrimitives = Record<'Dialog' | 'DialogContent' | 'DialogTitle' | 'Select' | 'SelectTrigger' | 'SelectValue' | 'SelectContent' | 'SelectItem' | 'Checkbox' | 'Button', ComponentType<any>>;
+  export const BusinessResourceImportDialog: ComponentType<ResourceImportDialogProps & { primitives?: ResourceImportPrimitives }>;
   export const openGalleryAgentId: (agents: Array<{ id: string; is_overall?: boolean }>) => string;
 }
 
