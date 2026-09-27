@@ -270,7 +270,7 @@ def update_knowledge_document(
     enforce_public_knowledge_pep(db, principal, agent_id, write=True, knowledge_base_id=knowledge_base_id, document_id=document_id)
     reject_public_scope_override(body, "tenant_id", "agent_id", "knowledge_base_id", "document_id")
     request = KnowledgeDocumentUpdateRequest(tenant_id=principal.tenant_id, **body)
-    return _dump(internal_knowledge.update_document(document_id, request, db, principal.actor_user))
+    return _dump(internal_knowledge.update_document(document_id, request, db, principal.actor_user, agent_id))
 
 
 @router.post("/agents/{agent_id}/knowledge-bases/{knowledge_base_id}/documents/{document_id}:archive", response_model=dict)

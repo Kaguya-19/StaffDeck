@@ -14,6 +14,7 @@ from app.public_api.auth import PublicPrincipal, get_public_principal
 from app.public_api.credential_profiles import AGENT_RUNTIME_SCOPES, USER_FULL_ACCESS_SCOPES
 from app.public_api import staffdeck_facade as facade
 from app.public_api import knowledge_pep
+from app.public_api import resources as public_resources
 from app.public_api.errors import PublicAPIError
 
 
@@ -187,6 +188,23 @@ class PublicStaffDeckFacadeTests(unittest.TestCase):
                 {"knowledge_base_id": "other"}, "tenant_id", "knowledge_base_id"
             )
         self.assertEqual(raised.exception.code, "PUBLIC_SCOPE_OVERRIDE")
+
+    def test_knowledge_document_update_keeps_target_branch_and_original_conflict_field(self) -> None:
+        body = {"content_md": "new content", "expected_updated_at": "2026-09-27T01:02:03"}
+        with patch.object(public_resources, "enforce_public_knowledge_pep") as pep, patch.object(
+            public_resources.internal_knowledge, "update_document", return_value={"id": "doc"}
+        ) as owner:
+            result = public_resources.update_knowledge_document(
+                "target-agent", "base", "doc", body, self.principal, self.db
+            )
+        self.assertEqual(result, {"id": "doc"})
+        pep.assert_called_once_with(
+            self.db, self.principal, "target-agent", write=True,
+            knowledge_base_id="base", document_id="doc",
+        )
+        self.assertEqual(owner.call_args.args[0], "doc")
+        self.assertEqual(owner.call_args.args[1].expected_updated_at, body["expected_updated_at"])
+        self.assertEqual(owner.call_args.args[4], "target-agent")
 
     def test_public_knowledge_list_rejects_member_without_native_view_permission(self) -> None:
         engine = create_engine("sqlite://", connect_args={"check_same_thread": False}, poolclass=StaticPool)
