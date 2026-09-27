@@ -6,11 +6,12 @@ enterprise routes are never assumed to run during a direct Python call.
 """
 from __future__ import annotations
 
+import base64
 from collections import OrderedDict
 from threading import Lock
 from typing import Any
 
-from fastapi import APIRouter, Depends, Query
+from fastapi import APIRouter, Depends, File, Form, Query, UploadFile
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, ConfigDict, Field
 from sqlmodel import Session, select
@@ -18,16 +19,19 @@ from sqlmodel import Session, select
 from app.agents.branching import get_agent
 from app.api import agents as native_agents
 from app.api import general_skills as native_general_skills
+from app.api import knowledge as native_knowledge
 from app.api import knowledge_bases as native_knowledge_bases
 from app.api import skills as native_skills
 from app.api import tools as native_tools
 from app.db import get_session
-from app.db.models import ModelConfig, User
+from app.db.models import KnowledgeBucket, KnowledgeChunk, KnowledgeDocument, KnowledgeDiscoverySuggestion, ModelConfig, User
 from app.public_api.auth import PublicPrincipal, enforce_agent_access, require_scopes
 from app.public_api.errors import PublicAPIError
+from app.public_api.knowledge_pep import enforce_public_knowledge_pep
 from app.public_api.sessions import ensure_public_agent
 from app.security.permissions import ensure_agent_scope_manager, require_agent_scope_viewer
 from app.skills.skill_schema import SkillCard, SkillDistillRequest, SkillRewriteRequest
+from app.knowledge.schema import KnowledgeBucketUpdateRequest, KnowledgeChunkUpdateRequest, KnowledgeConceptUpdateRequest, KnowledgeDocumentUploadRequest, KnowledgeOkfImportRequest
 from app.tools.tool_schema import ToolProbeRequest
 
 router = APIRouter(tags=["staffdeck-public-facade"])
@@ -279,6 +283,195 @@ def get_team_sop_version(
         if row.version == version:
             return _payload(row)
     raise PublicAPIError(404, "SOP_VERSION_NOT_FOUND", "SOP version not found.")
+
+
+@router.get("/agents/{agent_id}/knowledge-bases/{knowledge_base_id}/documents/{document_id}")
+def get_knowledge_document(
+    agent_id: str, knowledge_base_id: str, document_id: str,
+    principal: PublicPrincipal = Depends(require_scopes("knowledge:read")),
+    db: Session = Depends(get_session),
+) -> Any:
+    enforce_public_knowledge_pep(db, principal, agent_id, knowledge_base_id=knowledge_base_id, document_id=document_id)
+    return _payload(native_knowledge.get_document(document_id, principal.tenant_id, agent_id, db))
+
+
+@router.post("/agents/{agent_id}/knowledge-bases/{knowledge_base_id}/documents")
+async def upload_knowledge_document_facade(
+    agent_id: str, knowledge_base_id: str, file: UploadFile = File(...), title: str | None = Form(default=None),
+    principal: PublicPrincipal = Depends(require_scopes("knowledge:write")),
+    db: Session = Depends(get_session),
+) -> Any:
+    enforce_public_knowledge_pep(db, principal, agent_id, write=True, knowledge_base_id=knowledge_base_id)
+    content = await file.read()
+    if len(content) > 20 * 1024 * 1024:
+        raise PublicAPIError(413, "DOCUMENT_TOO_LARGE", "Documents are limited to 20 MB.")
+    request = KnowledgeDocumentUploadRequest(
+        tenant_id=principal.tenant_id, knowledge_base_id=knowledge_base_id,
+        filename=file.filename or "document.bin", title=title,
+        content_base64=base64.b64encode(content).decode("ascii"),
+        metadata={"content_type": file.content_type},
+    )
+    return _payload(native_knowledge.upload_document(request, agent_id, db, principal.actor_user))
+
+
+@router.post("/agents/{agent_id}/knowledge-bases/{knowledge_base_id}/okf:import")
+async def import_knowledge_okf_facade(
+    agent_id: str, knowledge_base_id: str, file: UploadFile = File(...),
+    principal: PublicPrincipal = Depends(require_scopes("knowledge:write")),
+    db: Session = Depends(get_session),
+) -> Any:
+    enforce_public_knowledge_pep(db, principal, agent_id, write=True, knowledge_base_id=knowledge_base_id)
+    content = await file.read()
+    if len(content) > 20 * 1024 * 1024:
+        raise PublicAPIError(413, "DOCUMENT_TOO_LARGE", "Documents are limited to 20 MB.")
+    request = KnowledgeOkfImportRequest(
+        tenant_id=principal.tenant_id, knowledge_base_id=knowledge_base_id,
+        filename=file.filename or "knowledge.zip", content_base64=base64.b64encode(content).decode("ascii"), agent_id=agent_id,
+    )
+    return _payload(native_knowledge.import_okf_bundle(request, db, principal.actor_user))
+
+
+@router.get("/agents/{agent_id}/knowledge-documents/{document_id}/buckets")
+def list_document_buckets_facade(
+    agent_id: str, document_id: str,
+    principal: PublicPrincipal = Depends(require_scopes("knowledge:read")), db: Session = Depends(get_session),
+) -> dict[str, Any]:
+    row = db.get(KnowledgeDocument, document_id)
+    if not row:
+        raise PublicAPIError(404, "DOCUMENT_NOT_FOUND", "Document not found.")
+    enforce_public_knowledge_pep(db, principal, agent_id, knowledge_base_id=row.knowledge_base_id, document_id=document_id)
+    rows = native_knowledge.get_document_buckets(document_id, principal.tenant_id, agent_id, db)
+    return {"data": [_payload(item) for item in rows], "next_cursor": None}
+
+
+@router.get("/agents/{agent_id}/knowledge-buckets/{bucket_id}/chunks")
+def list_bucket_chunks_facade(
+    agent_id: str, bucket_id: str,
+    principal: PublicPrincipal = Depends(require_scopes("knowledge:read")), db: Session = Depends(get_session),
+) -> dict[str, Any]:
+    bucket = db.get(KnowledgeBucket, bucket_id)
+    if not bucket:
+        raise PublicAPIError(404, "BUCKET_NOT_FOUND", "Knowledge bucket not found.")
+    enforce_public_knowledge_pep(db, principal, agent_id, knowledge_base_id=bucket.knowledge_base_id)
+    rows = native_knowledge.get_bucket_chunks(bucket_id, principal.tenant_id, agent_id, db)
+    return {"data": [_payload(item) for item in rows], "next_cursor": None}
+
+
+@router.put("/agents/{agent_id}/knowledge-buckets/{bucket_id}")
+def update_bucket_facade(
+    agent_id: str, bucket_id: str, body: dict[str, Any],
+    principal: PublicPrincipal = Depends(require_scopes("knowledge:write")), db: Session = Depends(get_session),
+) -> Any:
+    bucket = db.get(KnowledgeBucket, bucket_id)
+    if not bucket:
+        raise PublicAPIError(404, "BUCKET_NOT_FOUND", "Knowledge bucket not found.")
+    enforce_public_knowledge_pep(db, principal, agent_id, write=True, knowledge_base_id=bucket.knowledge_base_id)
+    request = KnowledgeBucketUpdateRequest(tenant_id=principal.tenant_id, **body)
+    return _payload(native_knowledge.update_bucket(bucket_id, request, db, principal.actor_user))
+
+
+@router.put("/agents/{agent_id}/knowledge-chunks/{chunk_id}")
+def update_chunk_facade(
+    agent_id: str, chunk_id: str, body: dict[str, Any],
+    principal: PublicPrincipal = Depends(require_scopes("knowledge:write")), db: Session = Depends(get_session),
+) -> Any:
+    chunk = db.get(KnowledgeChunk, chunk_id)
+    if not chunk:
+        raise PublicAPIError(404, "CHUNK_NOT_FOUND", "Knowledge chunk not found.")
+    enforce_public_knowledge_pep(db, principal, agent_id, write=True, knowledge_base_id=chunk.knowledge_base_id)
+    request = KnowledgeChunkUpdateRequest(tenant_id=principal.tenant_id, **body)
+    return _payload(native_knowledge.update_chunk(chunk_id, request, db, principal.actor_user))
+
+
+@router.get("/agents/{agent_id}/knowledge-bases/{knowledge_base_id}/concepts/{concept_id:path}")
+def get_knowledge_concept_facade(
+    agent_id: str, knowledge_base_id: str, concept_id: str,
+    principal: PublicPrincipal = Depends(require_scopes("knowledge:read")), db: Session = Depends(get_session),
+) -> Any:
+    enforce_public_knowledge_pep(db, principal, agent_id, knowledge_base_id=knowledge_base_id)
+    return _payload(native_knowledge_bases.get_okf_concept(knowledge_base_id, concept_id, principal.tenant_id, agent_id, db))
+
+
+@router.put("/agents/{agent_id}/knowledge-bases/{knowledge_base_id}/concepts/{concept_id:path}")
+def update_knowledge_concept_facade(
+    agent_id: str, knowledge_base_id: str, concept_id: str, body: dict[str, Any],
+    principal: PublicPrincipal = Depends(require_scopes("knowledge:write")), db: Session = Depends(get_session),
+) -> Any:
+    enforce_public_knowledge_pep(db, principal, agent_id, write=True, knowledge_base_id=knowledge_base_id)
+    request = KnowledgeConceptUpdateRequest(tenant_id=principal.tenant_id, **body)
+    return _payload(native_knowledge_bases.upsert_okf_concept(knowledge_base_id, concept_id, request, agent_id, db, principal.actor_user))
+
+
+@router.get("/agents/{agent_id}/knowledge-bases/{knowledge_base_id}/okf/export")
+def export_knowledge_okf_facade(
+    agent_id: str, knowledge_base_id: str,
+    principal: PublicPrincipal = Depends(require_scopes("knowledge:read")), db: Session = Depends(get_session),
+) -> dict[str, Any]:
+    enforce_public_knowledge_pep(db, principal, agent_id, knowledge_base_id=knowledge_base_id)
+    response = native_knowledge_bases.export_okf(knowledge_base_id, principal.tenant_id, agent_id, db)
+    return {"content_base64": base64.b64encode(response.body).decode("ascii"), "media_type": response.media_type, "filename": response.headers.get("content-disposition")}
+
+
+@router.get("/agents/{agent_id}/knowledge-jobs")
+def list_knowledge_jobs_facade(
+    agent_id: str, status: str | None = None, limit: int = Query(8, ge=1, le=50),
+    principal: PublicPrincipal = Depends(require_scopes("knowledge:read")), db: Session = Depends(get_session),
+) -> dict[str, Any]:
+    enforce_public_knowledge_pep(db, principal, agent_id)
+    rows = native_knowledge.list_jobs(principal.tenant_id, agent_id, status, limit, db)
+    return {"data": [_payload(item) for item in rows], "next_cursor": None}
+
+
+@router.get("/agents/{agent_id}/knowledge-jobs/{job_id}")
+def get_knowledge_job_facade(
+    agent_id: str, job_id: str,
+    principal: PublicPrincipal = Depends(require_scopes("knowledge:read")), db: Session = Depends(get_session),
+) -> Any:
+    enforce_public_knowledge_pep(db, principal, agent_id)
+    return _payload(native_knowledge.get_job(job_id, principal.tenant_id, agent_id, db))
+
+
+@router.post("/agents/{agent_id}/knowledge-jobs/{job_id}:cancel")
+def cancel_knowledge_job_facade(
+    agent_id: str, job_id: str,
+    principal: PublicPrincipal = Depends(require_scopes("knowledge:write")), db: Session = Depends(get_session),
+) -> Any:
+    enforce_public_knowledge_pep(db, principal, agent_id, write=True)
+    return _payload(native_knowledge.cancel_job(job_id, principal.tenant_id, db, principal.actor_user))
+
+
+@router.get("/agents/{agent_id}/knowledge-discoveries")
+def list_knowledge_discoveries_facade(
+    agent_id: str, knowledge_base_id: str | None = None, status: str | None = None,
+    principal: PublicPrincipal = Depends(require_scopes("knowledge:read")), db: Session = Depends(get_session),
+) -> dict[str, Any]:
+    enforce_public_knowledge_pep(db, principal, agent_id, knowledge_base_id=knowledge_base_id)
+    rows = native_knowledge.list_discoveries(principal.tenant_id, knowledge_base_id, status, agent_id, db)
+    return {"data": [_payload(item) for item in rows], "next_cursor": None}
+
+
+@router.post("/agents/{agent_id}/knowledge-discoveries/{suggestion_id}:confirm")
+def confirm_knowledge_discovery_facade(
+    agent_id: str, suggestion_id: str,
+    principal: PublicPrincipal = Depends(require_scopes("knowledge:write")), db: Session = Depends(get_session),
+) -> Any:
+    row = db.get(KnowledgeDiscoverySuggestion, suggestion_id)
+    if not row:
+        raise PublicAPIError(404, "DISCOVERY_NOT_FOUND", "Knowledge discovery not found.")
+    enforce_public_knowledge_pep(db, principal, agent_id, write=True, knowledge_base_id=row.knowledge_base_id)
+    return native_knowledge.confirm_discovery(suggestion_id, principal.tenant_id, db, principal.actor_user)
+
+
+@router.post("/agents/{agent_id}/knowledge-discoveries/{suggestion_id}:reject")
+def reject_knowledge_discovery_facade(
+    agent_id: str, suggestion_id: str,
+    principal: PublicPrincipal = Depends(require_scopes("knowledge:write")), db: Session = Depends(get_session),
+) -> Any:
+    row = db.get(KnowledgeDiscoverySuggestion, suggestion_id)
+    if not row:
+        raise PublicAPIError(404, "DISCOVERY_NOT_FOUND", "Knowledge discovery not found.")
+    enforce_public_knowledge_pep(db, principal, agent_id, write=True, knowledge_base_id=row.knowledge_base_id)
+    return native_knowledge.reject_discovery(suggestion_id, principal.tenant_id, db, principal.actor_user)
 
 
 @router.get("/team/knowledge-bases")
