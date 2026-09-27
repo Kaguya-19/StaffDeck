@@ -61,7 +61,7 @@ export function useKnowledgePageHost(): Host { return useContext(HostContext); }
 export const TENANT_ID = defaultHost.tenantId;
 export const api: Api = { get: (path, options) => activeHost.api.get(path, options), post: (path, body, options) => activeHost.api.post(path, body, options), put: (path, body) => activeHost.api.put(path, body), delete: (path) => activeHost.api.delete(path), blob: (path) => activeHost.api.blob(path) };
 export const navigate = (path: string) => activeHost.navigate(path);
-export class ApiError extends Error { status = 500; }
+export { ApiError } from './FormalApiError';
 // Native and public module transports have different error constructors.
 export function hasApiErrorStatus(error: unknown, status: number): boolean {
   return error instanceof Error && 'status' in error && error.status === status;

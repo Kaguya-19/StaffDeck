@@ -63,19 +63,10 @@ const defaultHost: DistillPageHost = {
   isTeamScope: (value) => value.startsWith('team:'),
 };
 const HostContext = createContext<DistillPageHost>(defaultHost);
-let activeHost = defaultHost;
-export function DistillPageHostProvider({ value, children }: { value: DistillPageHost; children: ReactNode }) { activeHost = value; return <HostContext.Provider value={value}>{children}</HostContext.Provider>; }
+export function DistillPageHostProvider({ value, children }: { value: DistillPageHost; children: ReactNode }) { return <HostContext.Provider value={value}>{children}</HostContext.Provider>; }
 export function useDistillPageHost(): DistillPageHost { return useContext(HostContext); }
 
-export const api: Api = { get: (path, options) => activeHost.api.get(path, options), post: (path, body) => activeHost.api.post(path, body), postWithSignal: (path, body, signal) => activeHost.api.postWithSignal(path, body, signal), put: (path, body) => activeHost.api.put(path, body), delete: (path) => activeHost.api.delete(path) };
-export const streamGet = (path: string, onEvent: (event: StreamEvent) => void, signal?: AbortSignal) => activeHost.streamGet(path, onEvent, signal);
-export const streamPost = (path: string, body: Record<string, unknown>, onEvent: (event: StreamEvent) => void, signal?: AbortSignal) => activeHost.streamPost(path, body, onEvent, signal);
-export const TENANT_ID = defaultHost.tenantId;
-export class ApiError extends Error { status = 500; body = ''; code?: string; }
-export const notify = { success: (message: string) => activeHost.notify.success(message), warning: (message: string) => activeHost.notify.warning(message), error: (message: string) => activeHost.notify.error(message), info: (message: string) => activeHost.notify.info(message) };
-export const navigate = (path: string, options?: { replace?: boolean }) => activeHost.navigate(path, options);
-export const readEmployeeScope = () => activeHost.readEmployeeScope();
-export const isTeamScope = (value: string) => activeHost.isTeamScope(value);
+export { ApiError } from './FormalApiError';
 export { cn } from './FormalUtils';
 export { normalizeCapabilityScope } from './FormalCapabilityScopeControl';
 export { SELECT_TRIGGER_CLASS } from './FormalHostStyles';
