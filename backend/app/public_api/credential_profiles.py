@@ -45,6 +45,7 @@ USER_FULL_ACCESS_SCOPES = frozenset(
         "gallery:use",
         "sops:write",
         "sops:publish",
+        "sops:cancel",
         "knowledge:write",
         "knowledge:publish",
         "skills:write",

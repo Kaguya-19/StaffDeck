@@ -27,9 +27,9 @@ from app.public_api.auth import PublicPrincipal, enforce_agent_access, require_s
 from app.public_api.errors import PublicAPIError
 from app.public_api.idempotency import replay_idempotent_response, store_idempotent_response
 from app.public_api.jobs import create_job, job_read, register_job_handler, update_job
+from app.public_api.knowledge_pep import enforce_public_knowledge_pep, reject_public_scope_override
 from app.public_api.runs import _job_actor
 from app.public_api.schemas import KnowledgeEntriesUpsert, ScheduledTaskPublicCreate
-from app.public_api.sessions import ensure_public_agent
 from app.scheduled_tasks.schema import ScheduledTaskCreateRequest, ScheduledTaskUpdateRequest
 from app.tools.tool_schema import (
     MCPDiscoverRequest,
@@ -69,8 +69,7 @@ def list_knowledge_bases(
     principal: PublicPrincipal = Depends(require_scopes("knowledge:read")),
     db: Session = Depends(get_session),
 ) -> dict:
-    enforce_agent_access(principal, agent_id)
-    ensure_public_agent(db, principal, agent_id)
+    enforce_public_knowledge_pep(db, principal, agent_id)
     rows = internal_knowledge_bases.list_knowledge_bases(principal.tenant_id, agent_id, db)
     return {"data": [_dump(row) for row in rows], "next_cursor": None}
 
@@ -82,7 +81,8 @@ def create_knowledge_base(
     principal: PublicPrincipal = Depends(require_scopes("knowledge:write")),
     db: Session = Depends(get_session),
 ) -> dict:
-    enforce_agent_access(principal, agent_id, write=True)
+    enforce_public_knowledge_pep(db, principal, agent_id, write=True)
+    reject_public_scope_override(body, "tenant_id", "agent_id")
     request = KnowledgeBaseCreateRequest(tenant_id=principal.tenant_id, **body)
     return _dump(internal_knowledge_bases.create_knowledge_base(request, agent_id, db, principal.actor_user))
 
@@ -95,7 +95,8 @@ def update_knowledge_base(
     principal: PublicPrincipal = Depends(require_scopes("knowledge:write")),
     db: Session = Depends(get_session),
 ) -> dict:
-    enforce_agent_access(principal, agent_id, write=True)
+    enforce_public_knowledge_pep(db, principal, agent_id, write=True, knowledge_base_id=knowledge_base_id)
+    reject_public_scope_override(body, "tenant_id", "agent_id", "knowledge_base_id")
     request = KnowledgeBaseUpdateRequest(tenant_id=principal.tenant_id, **body)
     return _dump(internal_knowledge_bases.update_knowledge_base(knowledge_base_id, request, agent_id, db, principal.actor_user))
 
@@ -118,7 +119,8 @@ def search_knowledge_base(
     principal: PublicPrincipal = Depends(require_scopes("knowledge:read")),
     db: Session = Depends(get_session),
 ) -> dict:
-    enforce_agent_access(principal, agent_id)
+    enforce_public_knowledge_pep(db, principal, agent_id, knowledge_base_id=knowledge_base_id)
+    reject_public_scope_override(body, "tenant_id", "agent_id", "knowledge_base_ids")
     request = KnowledgeSearchRequest(
         tenant_id=principal.tenant_id,
         agent_id=agent_id,
@@ -145,7 +147,7 @@ def upsert_knowledge_entries(
     principal: PublicPrincipal = Depends(require_scopes("knowledge:write")),
     db: Session = Depends(get_session),
 ) -> dict:
-    enforce_agent_access(principal, agent_id, write=True)
+    enforce_public_knowledge_pep(db, principal, agent_id, write=True, knowledge_base_id=knowledge_base_id)
     replay = replay_idempotent_response(db, principal, request, body.model_dump(mode="json"))
     if replay:
         response.status_code = replay[0]
@@ -180,7 +182,7 @@ async def upload_knowledge_document(
     principal: PublicPrincipal = Depends(require_scopes("knowledge:write")),
     db: Session = Depends(get_session),
 ) -> dict:
-    enforce_agent_access(principal, agent_id, write=True)
+    enforce_public_knowledge_pep(db, principal, agent_id, write=True, knowledge_base_id=knowledge_base_id)
     content = await file.read()
     if len(content) > 20 * 1024 * 1024:
         raise PublicAPIError(413, "DOCUMENT_TOO_LARGE", "Documents are limited to 20 MB.")
@@ -213,6 +215,7 @@ def list_knowledge_versions(
     principal: PublicPrincipal = Depends(require_scopes("knowledge:read")),
     db: Session = Depends(get_session),
 ) -> dict:
+    enforce_public_knowledge_pep(db, principal, agent_id, knowledge_base_id=knowledge_base_id)
     rows = internal_knowledge_bases.list_knowledge_base_versions(
         knowledge_base_id, principal.tenant_id, agent_id, db
     )
@@ -227,7 +230,8 @@ def rollback_knowledge_base(
     principal: PublicPrincipal = Depends(require_scopes("knowledge:publish")),
     db: Session = Depends(get_session),
 ) -> dict:
-    enforce_agent_access(principal, agent_id, write=True)
+    enforce_public_knowledge_pep(db, principal, agent_id, write=True, knowledge_base_id=knowledge_base_id)
+    reject_public_scope_override(body, "tenant_id", "agent_id", "knowledge_base_id")
     request = KnowledgeBaseRollbackRequest(
         tenant_id=principal.tenant_id,
         agent_id=agent_id,
@@ -245,6 +249,7 @@ def list_knowledge_documents(
     principal: PublicPrincipal = Depends(require_scopes("knowledge:read")),
     db: Session = Depends(get_session),
 ) -> dict:
+    enforce_public_knowledge_pep(db, principal, agent_id, knowledge_base_id=knowledge_base_id)
     rows = internal_knowledge.list_documents(
         principal.tenant_id, knowledge_base_id, agent_id, False, db
     )
@@ -260,7 +265,8 @@ def update_knowledge_document(
     principal: PublicPrincipal = Depends(require_scopes("knowledge:write")),
     db: Session = Depends(get_session),
 ) -> dict:
-    enforce_agent_access(principal, agent_id, write=True)
+    enforce_public_knowledge_pep(db, principal, agent_id, write=True, knowledge_base_id=knowledge_base_id, document_id=document_id)
+    reject_public_scope_override(body, "tenant_id", "agent_id", "knowledge_base_id", "document_id")
     request = KnowledgeDocumentUpdateRequest(tenant_id=principal.tenant_id, **body)
     return _dump(internal_knowledge.update_document(document_id, request, db, principal.actor_user))
 
@@ -285,6 +291,7 @@ def list_knowledge_concepts(
     principal: PublicPrincipal = Depends(require_scopes("knowledge:read")),
     db: Session = Depends(get_session),
 ) -> dict:
+    enforce_public_knowledge_pep(db, principal, agent_id, knowledge_base_id=knowledge_base_id)
     rows = internal_knowledge_bases.list_okf_concepts(
         knowledge_base_id, principal.tenant_id, agent_id, None, db
     )
