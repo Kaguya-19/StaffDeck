@@ -1,5 +1,14 @@
 # Source Map
 
+Release0.1.13 mechanically extracts formal frontend helper components from
+frontend-enterprise/src/components, chatHelpers, icons and graph helpers into
+Formal*. SD keeps thin wrappers with its original frontend primitives; PD
+injects ports of those primitives, without any enterprise backend dependency.
+The complete source-directory snapshot is checked, rather than the original
+thirteen-file slice. Mounted pages resolve transport, notify and scope through
+their instance Host context. No SOP/Knowledge core/version/permission changes.
+Runtime and browser contracts remain subject to independent gates.
+
 Release0.1.12 forwards Content/Title refs through the active Knowledge and
 Skills Host bridges to their injected formal dialog primitives. Original
 business dialog content, controlled callbacks and host primitive semantics
