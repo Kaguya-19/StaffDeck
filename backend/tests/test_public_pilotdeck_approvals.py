@@ -47,7 +47,104 @@ def test_router_enforces_native_tenant_before_public_bridge():
     )
     app.dependency_overrides[get_current_user] = lambda: User(
         id="approver", tenant_id="other", username="approver", password_hash="unused",
-        role="member", source="web", disabled=False,
+        role="member", source="web",
     )
     with TestClient(app) as client:
         assert client.get("/pilotdeck/approvals/session", headers={"authorization": "Bearer approver"}).status_code == 403
+
+
+@pytest.fixture
+def native_consumer(monkeypatch):
+    from fastapi import FastAPI
+    from fastapi.testclient import TestClient
+    from sqlalchemy.pool import StaticPool
+    from sqlmodel import Session, SQLModel, create_engine
+    from app.db import get_session
+    from app.db.models import User
+    from app.security.auth import create_access_token
+    from app.public_api.pilotdeck_approvals import router
+    from staffdeck_harness.runtime import control_auth
+
+    monkeypatch.setattr(control_auth, "provider", lambda: None)
+    engine = create_engine("sqlite://", connect_args={"check_same_thread": False}, poolclass=StaticPool)
+    SQLModel.metadata.create_all(engine)
+    with Session(engine) as db:
+        user = User(id="approver", tenant_id="tenant", username="approver",
+                    password_hash="unused", role="member", source="web")
+        assert not hasattr(user, "disabled")
+        db.add(user)
+        db.commit()
+        token = create_access_token(user)
+        calls = []
+        def handle(request):
+            calls.append(request)
+            return httpx.Response(200, json={"accepted": True, "duplicate": True, "revision": 8})
+        app = FastAPI()
+        app.include_router(router)
+        app.state.pilotdeck_approval_client = PilotDeckApprovalClient(
+            "http://localhost:16411", "service", "tenant", "target", httpx.MockTransport(handle))
+        app.dependency_overrides[get_session] = lambda: db
+        with TestClient(app) as client:
+            yield client, db, user, {"authorization": f"Bearer {token}"}, calls
+    engine.dispose()
+
+
+def test_matching_native_user_uses_real_auth_for_status_and_receipt(native_consumer):
+    client, db, user, headers, calls = native_consumer
+    assert client.get("/pilotdeck/approvals/session", headers=headers).status_code == 200
+    body = dict(session_key="session", request_id="request", wait_id="original",
+                expected_revision=7, message="Reviewed")
+    response = client.post("/pilotdeck/approvals/reply", headers=headers, json=body)
+    assert response.status_code == 200
+    assert response.json() == {"accepted": True, "duplicate": True, "revision": 8}
+    assert len(calls) == 2
+    assert calls[-1].headers["x-staffdeck-approver-authorization"] == headers["authorization"]
+
+
+@pytest.mark.parametrize("field,value", [("source", "channel"), ("role", "guest"), ("tenant_id", "other")])
+def test_native_subject_boundaries(native_consumer, field, value):
+    client, db, user, headers, calls = native_consumer
+    setattr(user, field, value)
+    db.add(user)
+    db.commit()
+    response = client.get("/pilotdeck/approvals/session", headers=headers)
+    assert response.status_code in {401, 403}
+    assert calls == []
+
+
+def test_native_missing_bearer_is_unauthenticated(native_consumer):
+    client, db, user, headers, calls = native_consumer
+    assert client.get("/pilotdeck/approvals/session").status_code == 401
+    assert calls == []
+
+
+@pytest.mark.parametrize("facts,status", [({"disabled": False}, 200), ({"disabled": True}, 403),
+                                           ({}, 503), ({"disabled": False, "role": "admin"}, 403)])
+def test_external_directory_disabled_is_authoritative(native_consumer, monkeypatch, facts, status):
+    from app.security.auth import get_current_user
+    from staffdeck_harness.runtime import control_auth
+    client, db, user, headers, calls = native_consumer
+    class ExternalControl:
+        member_identity_source = "web"
+        def resolve_members(self, tenant_id, ids):
+            assert (tenant_id, ids) == ("tenant", ["approver"])
+            return [dict(id="approver", tenant_id="tenant", username="approver",
+                         source="web", role="member") | facts]
+    monkeypatch.setattr(control_auth, "provider", lambda: ExternalControl())
+    # External authentication already returns this real User projection; only
+    # directory facts can authorize its active-account status, not the User.
+    client.app.dependency_overrides[get_current_user] = lambda: user
+    assert client.get("/pilotdeck/approvals/session", headers=headers).status_code == status
+    assert len(calls) == (1 if status == 200 else 0)
+
+
+def test_external_missing_directory_fails_closed(native_consumer, monkeypatch):
+    from app.security.auth import get_current_user
+    from staffdeck_harness.runtime import control_auth
+    client, db, user, headers, calls = native_consumer
+    monkeypatch.setattr(control_auth, "provider", lambda: object())
+    client.app.dependency_overrides[get_current_user] = lambda: user
+    response = client.get("/pilotdeck/approvals/session", headers=headers)
+    assert response.status_code == 503
+    assert response.json()["detail"]["code"] == "MEMBER_DIRECTORY_UNAVAILABLE"
+    assert calls == []
