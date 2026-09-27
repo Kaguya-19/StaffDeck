@@ -1,5 +1,10 @@
 # Source Map
 
+Release0.1.10 adds optional mounted Host saveVersionPolicy: when the public
+service allocates a new draft version, review shows that capability rather
+than promising a client-selected version. Native hosts without the hook and
+existing-draft ETag saves retain their original version review behavior.
+
 `KnowledgePage.tsx`, `SkillsPage.tsx`, and `DistillPage.tsx` are copied from the corresponding
 formal pages in `frontend-enterprise/src/pages` on the portable StaffDeck
 baseline. Their list, filter, CRUD, import, job, version/lifecycle, graph,
