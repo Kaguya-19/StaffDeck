@@ -10,6 +10,7 @@ from sqlmodel import Session
 from app.config import get_settings
 from app.db import engine
 from app.public_api import agents, credentials, examples, gallery, jobs, operations, resources, runs, sessions, sops, staffdeck_facade, webhooks
+from app.public_api import pilotdeck_approvals
 from app.public_api.errors import (
     PublicAPIError,
     public_api_error_handler,
@@ -60,6 +61,7 @@ def create_public_api_app() -> FastAPI:
     def health() -> dict[str, str]:
         return {"status": "ok", "version": "v1", "engine": "harness_v3"}
 
+    app.include_router(pilotdeck_approvals.router)
     app.include_router(credentials.router)
     app.include_router(gallery.router)
     app.include_router(agents.router)
