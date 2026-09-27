@@ -17,6 +17,8 @@ from sqlmodel import Session, select
 
 from app.agents.branching import get_agent
 from app.api import agents as native_agents
+from app.api import general_skills as native_general_skills
+from app.api import knowledge_bases as native_knowledge_bases
 from app.api import skills as native_skills
 from app.api import tools as native_tools
 from app.db import get_session
@@ -24,16 +26,16 @@ from app.db.models import ModelConfig, User
 from app.public_api.auth import PublicPrincipal, enforce_agent_access, require_scopes
 from app.public_api.errors import PublicAPIError
 from app.public_api.sessions import ensure_public_agent
-from app.security.permissions import ensure_agent_scope_manager
+from app.security.permissions import ensure_agent_scope_manager, require_agent_scope_viewer
 from app.skills.skill_schema import SkillCard, SkillDistillRequest, SkillRewriteRequest
 from app.tools.tool_schema import ToolProbeRequest
 
 router = APIRouter(tags=["staffdeck-public-facade"])
-_preview_agents: OrderedDict[str, str] = OrderedDict()
+_preview_agents: OrderedDict[str, str | None] = OrderedDict()
 _preview_agents_lock = Lock()
 
 
-def _register_preview_job(job_id: str, agent_id: str) -> None:
+def _register_preview_job(job_id: str, agent_id: str | None) -> None:
     # The native transient store records tenant and actor, but not agent. Keep
     # the path binding for the same in-memory lifetime as that store.
     with _preview_agents_lock:
@@ -76,6 +78,12 @@ def _agent(db: Session, principal: PublicPrincipal, agent_id: str, *, write: boo
         ensure_agent_scope_manager(db, principal.tenant_id, agent_id, principal.actor_user)
 
 
+def _team(db: Session, principal: PublicPrincipal) -> None:
+    if principal.agent_id is not None:
+        raise PublicAPIError(403, "TEAM_SCOPE_REQUIRES_ACCOUNT", "Team scope requires an account credential.")
+    require_agent_scope_viewer(principal.tenant_id, None, principal.actor_user, db)
+
+
 def _payload(value: Any) -> dict[str, Any]:
     if hasattr(value, "model_dump"):
         return value.model_dump(mode="json", exclude={"tenant_id"})
@@ -97,6 +105,19 @@ def preview_generate(
     return result
 
 
+@router.post("/team/sops:preview-generate", status_code=202)
+def team_preview_generate(
+    body: PreviewGenerate,
+    principal: PublicPrincipal = Depends(require_scopes("sops:write")),
+    db: Session = Depends(get_session),
+) -> dict[str, str]:
+    _team(db, principal)
+    request = SkillDistillRequest(tenant_id=principal.tenant_id, agent_id=None, **body.model_dump())
+    result = native_skills.create_distill_job(request, db, principal.actor_user)
+    _register_preview_job(result["job_id"], None)
+    return result
+
+
 @router.post("/agents/{agent_id}/sops/{sop_id}:preview-rewrite", status_code=202)
 def preview_rewrite(
     agent_id: str,
@@ -112,10 +133,27 @@ def preview_rewrite(
     return result
 
 
-def _preview_job(principal: PublicPrincipal, agent_id: str, job_id: str, db: Session):
-    _agent(db, principal, agent_id)
+@router.post("/team/sops/{sop_id}:preview-rewrite", status_code=202)
+def team_preview_rewrite(
+    sop_id: str,
+    body: PreviewRewrite,
+    principal: PublicPrincipal = Depends(require_scopes("sops:write")),
+    db: Session = Depends(get_session),
+) -> dict[str, str]:
+    _team(db, principal)
+    request = SkillRewriteRequest(tenant_id=principal.tenant_id, agent_id=None, **body.model_dump())
+    result = native_skills.create_rewrite_job(sop_id, request, db, principal.actor_user)
+    _register_preview_job(result["job_id"], None)
+    return result
+
+
+def _preview_job(principal: PublicPrincipal, agent_id: str | None, job_id: str, db: Session):
+    if agent_id is None:
+        _team(db, principal)
+    else:
+        _agent(db, principal, agent_id)
     with _preview_agents_lock:
-        if _preview_agents.get(job_id) != agent_id:
+        if job_id not in _preview_agents or _preview_agents[job_id] != agent_id:
             raise PublicAPIError(404, "JOB_NOT_FOUND", "Job not found for this agent.")
     # Native stream jobs are tenant + actual actor owned, not APIJob IDs.
     return native_skills._owned_stream_job(job_id, principal.actor_user)
@@ -153,6 +191,78 @@ def cancel_preview_job(
 ) -> dict[str, str]:
     _preview_job(principal, agent_id, job_id, db)
     return native_skills.cancel_skill_stream_job(job_id, principal.actor_user)
+
+
+@router.get("/team/sop-preview-jobs/{job_id}")
+def get_team_preview_job(
+    job_id: str,
+    principal: PublicPrincipal = Depends(require_scopes("sops:read")),
+    db: Session = Depends(get_session),
+) -> dict[str, object]:
+    _preview_job(principal, None, job_id, db)
+    return native_skills.get_skill_stream_job(job_id, principal.actor_user)
+
+
+@router.get("/team/sop-preview-jobs/{job_id}/events")
+def team_preview_job_events(
+    job_id: str,
+    after_seq: int = Query(0, ge=0),
+    principal: PublicPrincipal = Depends(require_scopes("sops:read")),
+    db: Session = Depends(get_session),
+) -> StreamingResponse:
+    _preview_job(principal, None, job_id, db)
+    return native_skills.stream_existing_skill_job(job_id, after_seq, principal.actor_user)
+
+
+@router.post("/team/sop-preview-jobs/{job_id}:cancel")
+def cancel_team_preview_job(
+    job_id: str,
+    principal: PublicPrincipal = Depends(require_scopes("sops:cancel")),
+    db: Session = Depends(get_session),
+) -> dict[str, str]:
+    _preview_job(principal, None, job_id, db)
+    return native_skills.cancel_skill_stream_job(job_id, principal.actor_user)
+
+
+@router.get("/team/tools")
+def list_team_tools(
+    principal: PublicPrincipal = Depends(require_scopes("tools:read")),
+    db: Session = Depends(get_session),
+) -> dict[str, Any]:
+    _team(db, principal)
+    from app.public_api.resources import _masked_tool
+    rows = native_tools.list_tools(principal.tenant_id, None, None, db)
+    return {"data": [_masked_tool(row) for row in rows], "next_cursor": None}
+
+
+@router.get("/team/general-skills")
+def list_team_general_skills(
+    principal: PublicPrincipal = Depends(require_scopes("skills:read")),
+    db: Session = Depends(get_session),
+) -> dict[str, Any]:
+    _team(db, principal)
+    rows = native_general_skills.list_general_skills(principal.tenant_id, db, None)
+    return {"data": [_payload(row) for row in rows], "next_cursor": None}
+
+
+@router.get("/team/sops")
+def list_team_sops(
+    principal: PublicPrincipal = Depends(require_scopes("sops:read")),
+    db: Session = Depends(get_session),
+) -> dict[str, Any]:
+    _team(db, principal)
+    rows = native_skills.list_skills(principal.tenant_id, db, None)
+    return {"data": [_payload(row) for row in rows], "drafts": [], "next_cursor": None}
+
+
+@router.get("/team/knowledge-bases")
+def list_team_knowledge_bases(
+    principal: PublicPrincipal = Depends(require_scopes("knowledge:read")),
+    db: Session = Depends(get_session),
+) -> dict[str, Any]:
+    _team(db, principal)
+    rows = native_knowledge_bases.list_knowledge_bases(principal.tenant_id, None, db)
+    return {"data": [_payload(row) for row in rows], "next_cursor": None}
 
 
 @router.post("/agents/{agent_id}/sops/{sop_id}:move-to-draft")

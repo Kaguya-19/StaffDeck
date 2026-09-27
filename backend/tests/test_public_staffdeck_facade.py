@@ -54,6 +54,13 @@ class PublicStaffDeckFacadeTests(unittest.TestCase):
             "/agents/{agent_id}/tools:probe": "post",
             "/agents/{agent_id}/tools/{tool_id}": "delete",
             "/agents/{agent_id}/sops:extract-file": "post",
+            "/team/tools": "get",
+            "/team/general-skills": "get",
+            "/team/knowledge-bases": "get",
+            "/team/sops": "get",
+            "/team/sops:preview-generate": "post",
+            "/team/sops/{sop_id}:preview-rewrite": "post",
+            "/team/sop-preview-jobs/{job_id}/events": "get",
         }
         for path, method in expected.items():
             self.assertIn(method, paths[path], path)
@@ -92,6 +99,23 @@ class PublicStaffDeckFacadeTests(unittest.TestCase):
                 facade._preview_job(self.principal, "agent-b", "bound-preview", self.db)
         self.assertEqual(raised.exception.code, "JOB_NOT_FOUND")
         native_owner.assert_not_called()
+
+    def test_team_preview_keeps_none_scope_and_rejects_agent_credential(self) -> None:
+        body = facade.PreviewRewrite.model_validate({
+            "current_skill": CARD, "instruction": "Rewrite team draft",
+            "conversation": [{"role": "user", "content": "unsaved"}],
+        })
+        with patch.object(facade, "_team"), patch.object(
+            facade.native_skills, "create_rewrite_job", return_value={"job_id": "team-preview"}
+        ) as create:
+            result = facade.team_preview_rewrite("sop_test", body, self.principal, self.db)
+        self.assertEqual(result, {"job_id": "team-preview"})
+        self.assertIsNone(create.call_args.args[1].agent_id)
+        self.assertEqual(create.call_args.args[1].conversation[0]["content"], "unsaved")
+        scoped = PublicPrincipal("tenant", self.actor, frozenset(USER_FULL_ACCESS_SCOPES), agent_id="agent")
+        with self.assertRaises(PublicAPIError) as raised:
+            facade._team(self.db, scoped)
+        self.assertEqual(raised.exception.code, "TEAM_SCOPE_REQUIRES_ACCOUNT")
 
     def test_http_preview_preserves_dirty_input_and_enforces_scope(self) -> None:
         app = create_public_api_app()
@@ -171,11 +195,17 @@ class PublicStaffDeckFacadeTests(unittest.TestCase):
                 yield db
         app.dependency_overrides[get_session] = session_override
         app.dependency_overrides[get_public_principal] = lambda: PublicPrincipal(
-            "tenant", visitor, frozenset({"knowledge:read"}), allowed_agent_ids=frozenset({"agent"})
+            "tenant", visitor, frozenset({"knowledge:read", "tools:read", "skills:read", "sops:read"}), allowed_agent_ids=frozenset({"agent"})
         )
         with TestClient(app) as client:
             denied = client.get("/agents/agent/knowledge-bases")
+            denied_tools = client.get("/agents/agent/tools")
+            denied_skills = client.get("/agents/agent/general-skills")
+            denied_sops = client.get("/agents/agent/sops")
         self.assertEqual(denied.status_code, 403, denied.text)
+        self.assertEqual(denied_tools.status_code, 403, denied_tools.text)
+        self.assertEqual(denied_skills.status_code, 403, denied_skills.text)
+        self.assertEqual(denied_sops.status_code, 403, denied_sops.text)
         app.dependency_overrides[get_public_principal] = lambda: PublicPrincipal(
             "tenant", owner, frozenset({"knowledge:read"}), allowed_agent_ids=frozenset({"agent"})
         )

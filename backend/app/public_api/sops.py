@@ -34,6 +34,7 @@ from app.public_api.schemas import (
     SOPRouteRequest,
 )
 from app.public_api.sessions import ensure_public_agent
+from app.security.permissions import require_agent_scope_viewer
 from app.public_api.utils import etag_for
 from app.skills import SkillDistiller, SkillEditor
 from app.skills.skill_schema import (
@@ -259,6 +260,7 @@ def list_sops(
 ) -> dict:
     enforce_agent_access(principal, agent_id)
     ensure_public_agent(db, principal, agent_id)
+    require_agent_scope_viewer(principal.tenant_id, agent_id, principal.actor_user, db)
     published = internal_skills.list_skills(principal.tenant_id, db, agent_id)
     drafts = db.exec(
         select(APISOPDraft).where(

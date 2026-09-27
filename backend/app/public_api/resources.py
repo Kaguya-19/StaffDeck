@@ -30,6 +30,8 @@ from app.public_api.jobs import create_job, job_read, register_job_handler, upda
 from app.public_api.knowledge_pep import enforce_public_knowledge_pep, reject_public_scope_override
 from app.public_api.runs import _job_actor
 from app.public_api.schemas import KnowledgeEntriesUpsert, ScheduledTaskPublicCreate
+from app.public_api.sessions import ensure_public_agent
+from app.security.permissions import require_agent_scope_viewer
 from app.scheduled_tasks.schema import ScheduledTaskCreateRequest, ScheduledTaskUpdateRequest
 from app.tools.tool_schema import (
     MCPDiscoverRequest,
@@ -362,6 +364,8 @@ def list_general_skills(
     db: Session = Depends(get_session),
 ) -> dict:
     enforce_agent_access(principal, agent_id)
+    ensure_public_agent(db, principal, agent_id)
+    require_agent_scope_viewer(principal.tenant_id, agent_id, principal.actor_user, db)
     rows = internal_general_skills.list_general_skills(principal.tenant_id, db, agent_id)
     return {"data": [_dump(row) for row in rows], "next_cursor": None}
 
@@ -430,6 +434,8 @@ def list_tools(
     db: Session = Depends(get_session),
 ) -> dict:
     enforce_agent_access(principal, agent_id)
+    ensure_public_agent(db, principal, agent_id)
+    require_agent_scope_viewer(principal.tenant_id, agent_id, principal.actor_user, db)
     rows = internal_tools.list_tools(principal.tenant_id, None, agent_id, db)
     return {"data": [_masked_tool(row) for row in rows], "next_cursor": None}
 
