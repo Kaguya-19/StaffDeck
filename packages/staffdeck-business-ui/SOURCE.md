@@ -1,5 +1,10 @@
 # Source Map
 
+Release0.1.12 forwards Content/Title refs through the active Knowledge and
+Skills Host bridges to their injected formal dialog primitives. Original
+business dialog content, controlled callbacks and host primitive semantics
+remain unchanged.
+
 Release0.1.11 adds optional selected-row editorQuery and an editor_context cache
 namespace. Portable hosts can bind a selected draftID or published version to
 the normal editor read without overwriting another lifecycle's dirty cache.
