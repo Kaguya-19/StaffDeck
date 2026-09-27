@@ -255,6 +255,32 @@ def list_team_sops(
     return {"data": [_payload(row) for row in rows], "drafts": [], "next_cursor": None}
 
 
+@router.get("/team/sops/{sop_id}/versions")
+def list_team_sop_versions(
+    sop_id: str,
+    principal: PublicPrincipal = Depends(require_scopes("sops:read")),
+    db: Session = Depends(get_session),
+) -> dict[str, Any]:
+    _team(db, principal)
+    rows = native_skills.list_skill_versions(sop_id, principal.tenant_id, db, None)
+    return {"data": [_payload(row) for row in rows]}
+
+
+@router.get("/team/sops/{sop_id}/versions/{version}")
+def get_team_sop_version(
+    sop_id: str,
+    version: str,
+    principal: PublicPrincipal = Depends(require_scopes("sops:read")),
+    db: Session = Depends(get_session),
+) -> dict[str, Any]:
+    _team(db, principal)
+    rows = native_skills.list_skill_versions(sop_id, principal.tenant_id, db, None)
+    for row in rows:
+        if row.version == version:
+            return _payload(row)
+    raise PublicAPIError(404, "SOP_VERSION_NOT_FOUND", "SOP version not found.")
+
+
 @router.get("/team/knowledge-bases")
 def list_team_knowledge_bases(
     principal: PublicPrincipal = Depends(require_scopes("knowledge:read")),

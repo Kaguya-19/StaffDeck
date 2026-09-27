@@ -34,7 +34,7 @@ from app.public_api.schemas import (
     SOPRouteRequest,
 )
 from app.public_api.sessions import ensure_public_agent
-from app.security.permissions import require_agent_scope_viewer
+from app.security.permissions import ensure_agent_scope_manager, require_agent_scope_viewer
 from app.public_api.utils import etag_for
 from app.skills import SkillDistiller, SkillEditor
 from app.skills.skill_schema import (
@@ -351,6 +351,7 @@ def create_structured_sop(
 ) -> dict:
     enforce_agent_access(principal, agent_id, write=True)
     ensure_public_agent(db, principal, agent_id)
+    ensure_agent_scope_manager(db, principal.tenant_id, agent_id, principal.actor_user)
     replay = replay_idempotent_response(db, principal, request, body.model_dump(mode="json"))
     if replay:
         response.status_code = replay[0]
@@ -517,6 +518,9 @@ def get_sop_draft(
     principal: PublicPrincipal = Depends(require_scopes("sops:read")),
     db: Session = Depends(get_session),
 ) -> dict:
+    enforce_agent_access(principal, agent_id)
+    ensure_public_agent(db, principal, agent_id)
+    require_agent_scope_viewer(principal.tenant_id, agent_id, principal.actor_user, db)
     row = _owned_draft(db, principal, agent_id, sop_id, draft_id)
     response.headers["ETag"] = row.etag
     return _draft_payload(row)
@@ -534,6 +538,8 @@ def replace_sop_draft(
     db: Session = Depends(get_session),
 ) -> dict:
     enforce_agent_access(principal, agent_id, write=True)
+    ensure_public_agent(db, principal, agent_id)
+    ensure_agent_scope_manager(db, principal.tenant_id, agent_id, principal.actor_user)
     row = _owned_draft(db, principal, agent_id, sop_id, draft_id)
     _require_etag(row, if_match)
     try:
@@ -614,6 +620,8 @@ def publish_sop(
     db: Session = Depends(get_session),
 ) -> dict:
     enforce_agent_access(principal, agent_id, write=True)
+    ensure_public_agent(db, principal, agent_id)
+    ensure_agent_scope_manager(db, principal.tenant_id, agent_id, principal.actor_user)
     row = _owned_draft(db, principal, agent_id, sop_id, body.draft_id)
     validation = validate_draft(db, row)
     if not validation["valid"]:
@@ -661,6 +669,8 @@ def archive_sop(
     db: Session = Depends(get_session),
 ) -> dict:
     enforce_agent_access(principal, agent_id, write=True)
+    ensure_public_agent(db, principal, agent_id)
+    ensure_agent_scope_manager(db, principal.tenant_id, agent_id, principal.actor_user)
     archived = internal_skills.archive_skill(
         sop_id,
         principal.tenant_id,
@@ -679,6 +689,8 @@ def list_sop_versions(
     db: Session = Depends(get_session),
 ) -> dict:
     enforce_agent_access(principal, agent_id)
+    ensure_public_agent(db, principal, agent_id)
+    require_agent_scope_viewer(principal.tenant_id, agent_id, principal.actor_user, db)
     rows = internal_skills.list_skill_versions(sop_id, principal.tenant_id, db, agent_id)
     return {"data": [row.model_dump(mode="json", exclude={"tenant_id"}) for row in rows]}
 
@@ -706,6 +718,8 @@ def get_sop_version(
     db: Session = Depends(get_session),
 ) -> dict:
     enforce_agent_access(principal, agent_id)
+    ensure_public_agent(db, principal, agent_id)
+    require_agent_scope_viewer(principal.tenant_id, agent_id, principal.actor_user, db)
     return _version_payload(db, principal, agent_id, sop_id, version)
 
 
@@ -755,6 +769,8 @@ def rollback_sop_version(
     db: Session = Depends(get_session),
 ) -> dict:
     enforce_agent_access(principal, agent_id, write=True)
+    ensure_public_agent(db, principal, agent_id)
+    ensure_agent_scope_manager(db, principal.tenant_id, agent_id, principal.actor_user)
     selected = _version_payload(db, principal, agent_id, sop_id, version)
     row = _new_draft(
         db,

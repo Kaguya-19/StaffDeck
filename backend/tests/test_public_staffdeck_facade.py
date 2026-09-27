@@ -58,6 +58,8 @@ class PublicStaffDeckFacadeTests(unittest.TestCase):
             "/team/general-skills": "get",
             "/team/knowledge-bases": "get",
             "/team/sops": "get",
+            "/team/sops/{sop_id}/versions": "get",
+            "/team/sops/{sop_id}/versions/{version}": "get",
             "/team/sops:preview-generate": "post",
             "/team/sops/{sop_id}:preview-rewrite": "post",
             "/team/sop-preview-jobs/{job_id}/events": "get",
@@ -116,6 +118,15 @@ class PublicStaffDeckFacadeTests(unittest.TestCase):
         with self.assertRaises(PublicAPIError) as raised:
             facade._team(self.db, scoped)
         self.assertEqual(raised.exception.code, "TEAM_SCOPE_REQUIRES_ACCOUNT")
+
+    def test_team_version_read_uses_original_none_branch_and_exact_version(self) -> None:
+        rows = [SimpleNamespace(version="1.0.1", model_dump=lambda **_kw: {"version": "1.0.1", "content": CARD})]
+        with patch.object(facade, "_team"), patch.object(
+            facade.native_skills, "list_skill_versions", return_value=rows
+        ) as versions:
+            result = facade.get_team_sop_version("sop_test", "1.0.1", self.principal, self.db)
+        self.assertEqual(result["version"], "1.0.1")
+        versions.assert_called_once_with("sop_test", "tenant", self.db, None)
 
     def test_http_preview_preserves_dirty_input_and_enforces_scope(self) -> None:
         app = create_public_api_app()
@@ -202,10 +213,16 @@ class PublicStaffDeckFacadeTests(unittest.TestCase):
             denied_tools = client.get("/agents/agent/tools")
             denied_skills = client.get("/agents/agent/general-skills")
             denied_sops = client.get("/agents/agent/sops")
+            denied_draft = client.get("/agents/agent/sops/s/drafts/d")
+            denied_versions = client.get("/sops/s/versions?agent_id=agent")
+            denied_version = client.get("/sops/s/versions/1.0.0?agent_id=agent")
         self.assertEqual(denied.status_code, 403, denied.text)
         self.assertEqual(denied_tools.status_code, 403, denied_tools.text)
         self.assertEqual(denied_skills.status_code, 403, denied_skills.text)
         self.assertEqual(denied_sops.status_code, 403, denied_sops.text)
+        self.assertEqual(denied_draft.status_code, 403, denied_draft.text)
+        self.assertEqual(denied_versions.status_code, 403, denied_versions.text)
+        self.assertEqual(denied_version.status_code, 403, denied_version.text)
         app.dependency_overrides[get_public_principal] = lambda: PublicPrincipal(
             "tenant", owner, frozenset({"knowledge:read"}), allowed_agent_ids=frozenset({"agent"})
         )
