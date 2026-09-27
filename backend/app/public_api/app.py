@@ -30,6 +30,8 @@ def create_public_api_app() -> FastAPI:
         redoc_url="/redoc",
         openapi_url="/openapi.json",
     )
+    from app.public_api.pilotdeck_approval_binding import bind_pilotdeck_approval_client
+    bind_pilotdeck_approval_client(app)
     app.add_exception_handler(PublicAPIError, public_api_error_handler)
     app.add_exception_handler(HTTPException, public_http_error_handler)
     app.add_exception_handler(RequestValidationError, public_validation_error_handler)
