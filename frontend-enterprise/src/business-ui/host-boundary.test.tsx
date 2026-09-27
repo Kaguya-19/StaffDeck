@@ -24,7 +24,7 @@ describe('mounted Distill boundary', () => {
         get: vi.fn(async (path: string) => path.startsWith('/api/enterprise/skills/example?') ? {
           id: 'draft-' + tenantId, skill_id: 'example', name: 'Example', version: '1.0.0',
           content: { skill_id: 'example', name: 'Example', version: '1.0.0', nodes: [{ node_id: 'one', name: 'Only node', type: 'reply' }], edges: [] },
-        } : []),
+        } : []) as DistillPageHost['api']['get'],
         post: vi.fn(), postWithSignal: vi.fn(), put: vi.fn(), delete: vi.fn(),
       },
       tenantId, navigate: vi.fn(), streamGet: vi.fn(), streamPost: vi.fn(),

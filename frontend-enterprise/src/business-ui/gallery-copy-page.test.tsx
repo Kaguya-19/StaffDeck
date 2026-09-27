@@ -38,7 +38,7 @@ describe('shared plaza copy entry', () => {
     });
     const host = {
       ...knowledgePageHost,
-      api: { ...knowledgePageHost.api, get, post },
+      api: { ...knowledgePageHost.api, get: get as typeof knowledgePageHost.api.get, post: post as typeof knowledgePageHost.api.post },
       loadEmployeeDirectory: async () => agents,
       agentScope: { ...knowledgePageHost.agentScope, read: () => 'employee-1' },
       notify: { success: vi.fn(), warning: vi.fn(), error: vi.fn() },
@@ -61,14 +61,12 @@ describe('shared plaza copy entry', () => {
     expect(screen.getByText('从广场复制知识库')).toBeTruthy();
     await waitFor(() => expect(get).toHaveBeenCalledWith(
       '/api/enterprise/knowledge-bases?tenant_id=tenant_demo&agent_id=overall-actual',
-      undefined,
     ));
     await user.click(await within(screen.getByRole('dialog')).findByText('Policy'));
     await user.click(within(screen.getByRole('dialog')).getByRole('button', { name: '复制' }));
     await waitFor(() => expect(post).toHaveBeenCalledWith(
       '/api/enterprise/agents/employee-1/resources/import',
       { tenant_id: 'tenant_demo', source_agent_id: 'overall-actual', resource_type: 'knowledge_base', resource_ids: ['base-1'] },
-      undefined,
     ));
     expect(host.notify.error).not.toHaveBeenCalled();
   });
@@ -87,7 +85,7 @@ describe('shared plaza copy entry', () => {
     });
     const host = {
       ...skillsPageHost,
-      api: { ...skillsPageHost.api, get, post },
+      api: { ...skillsPageHost.api, get: get as typeof skillsPageHost.api.get, post: post as typeof skillsPageHost.api.post },
       readEmployeeScope: () => 'employee-1',
       notify: { success: vi.fn(), warning: vi.fn(), error: vi.fn() },
     };

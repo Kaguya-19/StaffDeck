@@ -2,11 +2,50 @@
   "compilerOptions": {
     "baseUrl": ".",
     "paths": {
-      "@/*": ["./src/*"]
+      "@/*": [
+        "./src/*"
+      ],
+      "@staffdeck/business-ui/*": [
+        "../packages/staffdeck-business-ui/src/*"
+      ],
+      "react": [
+        "./node_modules/@types/react/index.d.ts"
+      ],
+      "react/*": [
+        "./node_modules/@types/react/*"
+      ],
+      "react-dom": [
+        "./node_modules/@types/react-dom/index.d.ts"
+      ],
+      "react-dom/*": [
+        "./node_modules/@types/react-dom/*"
+      ],
+      "lucide-react": [
+        "./node_modules/lucide-react"
+      ],
+      "radix-ui": [
+        "./node_modules/radix-ui"
+      ],
+      "react-router-dom": [
+        "./node_modules/react-router-dom"
+      ],
+      "clsx": [
+        "./node_modules/clsx"
+      ],
+      "tailwind-merge": [
+        "./node_modules/tailwind-merge"
+      ],
+      "cytoscape": [
+        "./node_modules/cytoscape"
+      ]
     },
     "target": "ES2020",
     "useDefineForClassFields": true,
-    "lib": ["DOM", "DOM.Iterable", "ES2020"],
+    "lib": [
+      "DOM",
+      "DOM.Iterable",
+      "ES2020"
+    ],
     "allowJs": false,
     "skipLibCheck": true,
     "esModuleInterop": true,
@@ -14,12 +53,14 @@
     "strict": true,
     "forceConsistentCasingInFileNames": true,
     "module": "ESNext",
-    "moduleResolution": "Node",
+    "moduleResolution": "Bundler",
     "resolveJsonModule": true,
     "isolatedModules": true,
     "noEmit": true,
     "jsx": "react-jsx"
   },
-  "include": ["src"],
+  "include": [
+    "src"
+  ],
   "references": []
 }

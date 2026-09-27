@@ -146,6 +146,7 @@ describe('KnowledgeGraphVisualization', () => {
 
     const formatted = await screen.findByText('Case L-2022-008');
     expect(formatted.tagName).toBe('STRONG');
+    expect(formatted.closest('[data-i18n-ignore][translate="no"]')).not.toBeNull();
     expect(screen.getAllByText('Liability Cases')).toHaveLength(1);
     const externalLink = screen.getByRole('link', { name: 'External reference' });
     expect(externalLink.getAttribute('target')).toBe('_blank');
@@ -153,7 +154,8 @@ describe('KnowledgeGraphVisualization', () => {
 
     await userEvent.click(screen.getByRole('button', { name: 'Read related terms' }));
     await waitFor(() => expect(screen.getByRole('heading', { name: 'Related Terms' })).toBeTruthy());
-    expect(screen.getByText('Term details')).toBeTruthy();
+    expect(screen.getByText('Term details').closest('[data-i18n-ignore][translate="no"]')).not.toBeNull();
+    expect(screen.getByRole('heading', { name: 'Related Terms' }).getAttribute('translate')).toBe('no');
   });
 
   it('requires an explicit filtered scope before drawing more than 500 nodes', async () => {

@@ -5,11 +5,11 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import {
   KnowledgePageHostProvider,
-  openGalleryAgentId as knowledgeGalleryAgentId,
+  useKnowledgePageHost,
 } from '@staffdeck/business-ui/KnowledgePageHost';
 import {
   SkillsPageHostProvider,
-  openGalleryAgentId as skillsGalleryAgentId,
+  useSkillsPageHost,
 } from '@staffdeck/business-ui/SkillsPageHost';
 
 import { knowledgePageHost } from './knowledge-host';
@@ -26,22 +26,24 @@ describe('shared gallery host dispatch', () => {
     const knowledgeResolver = vi.fn(knowledgePageHost.openGalleryAgentId);
     const skillsResolver = vi.fn(skillsPageHost.openGalleryAgentId);
 
+    function KnowledgeProbe() { const host = useKnowledgePageHost(); host.openGalleryAgentId(agents); host.openGalleryAgentId([{id:'employee-1',is_overall:false}]); return null; }
+    function SkillsProbe() { const host = useSkillsPageHost(); host.openGalleryAgentId(agents); host.openGalleryAgentId([{id:'employee-1',is_overall:false}]); return null; }
     render(
       <>
         <KnowledgePageHostProvider value={{ ...knowledgePageHost, openGalleryAgentId: knowledgeResolver }}>
-          <span />
+          <KnowledgeProbe />
         </KnowledgePageHostProvider>
         <SkillsPageHostProvider value={{ ...skillsPageHost, openGalleryAgentId: skillsResolver }}>
-          <span />
+          <SkillsProbe />
         </SkillsPageHostProvider>
       </>,
     );
 
-    expect(knowledgeGalleryAgentId(agents)).toBe('overall-actual');
-    expect(skillsGalleryAgentId(agents)).toBe('overall-actual');
+    expect(knowledgeResolver.mock.results[0].value).toBe('overall-actual');
+    expect(skillsResolver.mock.results[0].value).toBe('overall-actual');
     expect(knowledgeResolver).toHaveBeenCalledWith(agents);
     expect(skillsResolver).toHaveBeenCalledWith(agents);
-    expect(knowledgeGalleryAgentId([{ id: 'employee-1', is_overall: false }])).toBe('');
-    expect(skillsGalleryAgentId([{ id: 'employee-1', is_overall: false }])).toBe('');
+    expect(knowledgeResolver.mock.results[1].value).toBe('');
+    expect(skillsResolver.mock.results[1].value).toBe('');
   });
 });

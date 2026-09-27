@@ -31,7 +31,7 @@ function renderWithDiscoveries(discoveries: () => unknown[]) {
     isEnterpriseAdmin: () => true,
     loadEmployeeDirectory: async () => [],
     agentScope: { read: () => '', persist: vi.fn(), clear: vi.fn(), emit: vi.fn() },
-    visibleEmployeeAgents: (agents: unknown[]) => agents,
+    visibleEmployeeAgents: (agents) => agents,
     canManageEmployeeAgent: () => true,
     openGalleryAgentId: (agents: Array<{ id: string; is_overall?: boolean }>) => agents.find((agent) => agent.is_overall)?.id || '',
     openGalleryImportSourceOptions: () => [],

@@ -52,7 +52,7 @@ it('keeps actual Skills pagination calls with the Host that owns their rows', as
     api: { ...skillsPageHost.api, get: vi.fn(async (path: string) => path.startsWith('/api/enterprise/skills?') ? [{
       id: 'row-' + id, skill_id: 'sop-' + id, name: 'Name-' + id, version: '1', status: 'draft', updated_at: '2026-09-27',
     }] : agents) as SkillsPageHost['api']['get'] },
-    useClientPagination: vi.fn(skillsPageHost.useClientPagination),
+    useClientPagination: vi.fn(skillsPageHost.useClientPagination) as SkillsPageHost['useClientPagination'],
     notify: { success: vi.fn(), warning: vi.fn(), error: vi.fn() },
   });
   const a = makeHost('tenant-a');

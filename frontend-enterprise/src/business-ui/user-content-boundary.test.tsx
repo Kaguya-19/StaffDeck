@@ -23,7 +23,7 @@ const agents = [
   { id: 'overall-actual', name: '开放广场', is_overall: true, active: true },
 ];
 const currentUser = { id: 'admin', tenant_id: 'tenant_demo', username: 'admin', role: 'admin' as const };
-const notify = () => ({ success: vi.fn(), warning: vi.fn(), error: vi.fn() });
+const notify = () => ({ success: vi.fn(), warning: vi.fn(), error: vi.fn(), info: vi.fn() });
 const boundary = (element: Element) => element.closest('[data-i18n-ignore][translate="no"]');
 afterEach(() => { cleanup(); window.localStorage.clear(); vi.unstubAllGlobals(); });
 
@@ -40,7 +40,7 @@ describe('resource text boundaries in the actual shared pages', () => {
       throw new Error(`Unexpected Knowledge request: ${path}`);
     });
     const host = {
-      ...knowledgePageHost, api: { ...knowledgePageHost.api, get },
+      ...knowledgePageHost, api: { ...knowledgePageHost.api, get: get as typeof knowledgePageHost.api.get },
       loadEmployeeDirectory: async () => agents,
       agentScope: { ...knowledgePageHost.agentScope, read: () => 'employee-1' },
       resourceCreatorName: () => '删除', notify: notify(),
@@ -77,7 +77,7 @@ describe('resource text boundaries in the actual shared pages', () => {
       throw new Error(`Unexpected Knowledge request: ${path}`);
     });
     const host = {
-      ...knowledgePageHost, api: { ...knowledgePageHost.api, get },
+      ...knowledgePageHost, api: { ...knowledgePageHost.api, get: get as typeof knowledgePageHost.api.get },
       loadEmployeeDirectory: async () => agents,
       agentScope: { ...knowledgePageHost.agentScope, read: () => 'employee-1' }, notify: notify(),
     };
@@ -110,7 +110,7 @@ describe('resource text boundaries in the actual shared pages', () => {
       throw new Error(`Unexpected Skills request: ${path}`);
     });
     const host = {
-      ...skillsPageHost, api: { ...skillsPageHost.api, get }, readEmployeeScope: () => 'employee-1',
+      ...skillsPageHost, api: { ...skillsPageHost.api, get: get as typeof skillsPageHost.api.get }, readEmployeeScope: () => 'employee-1',
       resourceCreatorName: () => '删除', notify: notify(),
     };
     render(<I18nProvider><LocaleControl /><MemoryRouter><SkillsPageHostProvider value={host}>
@@ -141,7 +141,7 @@ describe('resource text boundaries in the actual shared pages', () => {
       if (/^\/api\/(enterprise\/(tools|general-skills|knowledge-bases|skills|model-configs)|auth\/users)\?/.test(path)) return [];
       throw new Error(`Unexpected Distill request: ${path}`);
     });
-    const host = { ...distillPageHost, api: { ...distillPageHost.api, get }, notify: notify() };
+    const host = { ...distillPageHost, api: { ...distillPageHost.api, get: get as typeof distillPageHost.api.get }, notify: notify() };
     render(<I18nProvider><LocaleControl /><MemoryRouter><DistillPageHostProvider value={host}>
       <SharedDistillPage searchParamsOverride={new URLSearchParams('skill_id=boundary-sop&agent_id=employee-1')} currentUser={currentUser} />
     </DistillPageHostProvider></MemoryRouter></I18nProvider>);

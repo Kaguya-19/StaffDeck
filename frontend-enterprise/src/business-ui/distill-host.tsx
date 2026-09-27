@@ -1,5 +1,5 @@
 import type { DistillPageHost } from '@staffdeck/business-ui/DistillPageHost';
-import { api, streamGet, streamPost, TENANT_ID } from '../api/client';
+import { api, ApiError, streamGet, streamPost, TENANT_ID } from '../api/client';
 import { notify } from '@/components/ui/app-toast';
 import AppHeader from '@/components/AppHeader';
 import { ConfirmDialog } from '@/components/ConfirmDialog';
@@ -26,6 +26,7 @@ import {
 } from '../icons';
 
 export const distillPageHost: DistillPageHost = {
+  permitsNativeConflictRecovery: (error) => error instanceof ApiError && error.status === 409,
   api: {
     get: api.get,
     post: api.post,

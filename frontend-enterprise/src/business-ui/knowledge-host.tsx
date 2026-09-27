@@ -18,7 +18,7 @@ import { loadEmployeeDirectory } from '../api/employee-directory';
 import { isEnterpriseAdmin } from '../auth';
 import { canManageEmployeeAgent, openGalleryAgentId, openGalleryImportSourceOptions, resourceCreatorName, visibleEmployeeAgents } from '../employee';
 import { useClientPagination } from '../hooks/useClientPagination';
-import { renderMarkdownBlocks } from '../pages/chat/chatHelpers';
+import { renderMarkdownBlocks } from '@staffdeck/business-ui/FormalMarkdown';
 import { getDateLocale } from '@/i18n';
 import IconAdd from '../assets/icons/add.svg?react';
 import IconChevronDown from '../assets/icons/chevron-down.svg?react';
@@ -36,7 +36,9 @@ export const knowledgePageHost: Host = {
   isEnterpriseAdmin: (user: any) => isEnterpriseAdmin(user as any),
   loadEmployeeDirectory: () => loadEmployeeDirectory() as any,
   agentScope: { read: readEmployeeScope, persist: persistSharedAgentScope, clear: clearSharedAgentScope, emit: emitAgentScopeChange },
-  visibleEmployeeAgents, canManageEmployeeAgent, openGalleryAgentId, openGalleryImportSourceOptions, resourceCreatorName,
+  visibleEmployeeAgents: (agents, user, options) => visibleEmployeeAgents(agents as Parameters<typeof visibleEmployeeAgents>[0], user as Parameters<typeof visibleEmployeeAgents>[1], options),
+  canManageEmployeeAgent: (agent, user) => canManageEmployeeAgent(agent as Parameters<typeof canManageEmployeeAgent>[0], user as Parameters<typeof canManageEmployeeAgent>[1]),
+  openGalleryAgentId, openGalleryImportSourceOptions, resourceCreatorName,
   renderMarkdownBlocks: (value: string) => renderMarkdownBlocks(value), getDateLocale: () => getDateLocale(),
   components: { AppHeader, CapabilityScopeLoading, CapabilityScopeBadge, CapabilityScopeControl, ConfirmDialog, DataTable, Dialog, DialogContent, DialogTitle, DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuSeparator, DropdownMenuTrigger, Input, ModelConfigDropdown, Paginator, Progress, ResourceImportDialog, StatCard, Textarea, UISelect, Accordion, AccordionContent, AccordionItem, AccordionTrigger, UIButton, KnowledgeGraphVisualization },
   icons: { IconAdd, IconChevronDown, IconClear, IconFolder, IconRefresh, IconSearch },
