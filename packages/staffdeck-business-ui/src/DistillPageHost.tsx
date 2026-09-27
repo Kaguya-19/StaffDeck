@@ -1,4 +1,5 @@
-import { createContext, createElement, useContext, useState, type ComponentType, type ReactNode } from 'react';
+import { createContext, createElement, forwardRef, useContext, useState, type ComponentType, type ReactNode } from 'react';
+import { cn } from './FormalUtils';
 import { AlertCircle, ArrowLeft, Braces, Check, CheckCircle, ChevronDown, CircleX, Clipboard, Code2, FileText, Info, LoaderCircle, MoreHorizontal, Play, Plus, Save, Send, Square, Trash2, Upload, X, type LucideProps } from 'lucide-react';
 import {
   Dialog as SkillsDialog,
@@ -34,6 +35,8 @@ type Api = {
 type HostComponent = ComponentType<any>;
 
 export type DistillPageHost = {
+  // Only the native Host retains its original conflict fallback semantics.
+  permitsNativeConflictRecovery?(error: unknown): boolean;
   saveVersionPolicy?(snapshot: SkillRead): { serviceAssigned: true; label: string } | undefined;
   restoreEditorReadSnapshot?(snapshot: SkillRead): void;
   api: Api;
@@ -73,16 +76,15 @@ export const notify = { success: (message: string) => activeHost.notify.success(
 export const navigate = (path: string, options?: { replace?: boolean }) => activeHost.navigate(path, options);
 export const readEmployeeScope = () => activeHost.readEmployeeScope();
 export const isTeamScope = (value: string) => activeHost.isTeamScope(value);
-export const cn = (...values: Array<string | false | null | undefined>) => values.filter(Boolean).join(' ');
-export const normalizeCapabilityScope = (value: unknown) => value;
-export const SELECT_TRIGGER_CLASS = '';
-export const subscribeEnterpriseCapabilityCatalogRefresh = (listener: () => void) => { window.addEventListener('staffdeck-capability-catalog-refresh', listener); return () => window.removeEventListener('staffdeck-capability-catalog-refresh', listener); };
-export const formatHandoffAssigneeValue = (userId: string, channel?: string) => channel ? `${userId}::${channel}` : userId;
-export const parseHandoffAssigneeValue = (value: string) => { const [userId, channel] = value.split('::'); return { userId, channel: channel || undefined }; };
-export async function copyTextToClipboard(value: string): Promise<void> { if (navigator.clipboard?.writeText) await navigator.clipboard.writeText(value); else throw new Error('Clipboard API is unavailable'); }
+export { cn } from './FormalUtils';
+export { normalizeCapabilityScope } from './FormalCapabilityScopeControl';
+export { SELECT_TRIGGER_CLASS } from './FormalHostStyles';
+export { subscribeEnterpriseCapabilityCatalogRefresh } from './FormalCatalogEvents';
+export { formatHandoffAssigneeValue, parseHandoffAssigneeValue } from './FormalHandoff';
+export { copyTextToClipboard } from './FormalClipboard';
 
 function fallbackComponent(name: string, fallback: HostComponent): HostComponent {
-  return (props: any) => { const host = useDistillPageHost(); return createElement(host.components?.[name] || fallback, props); };
+  return forwardRef<any, any>((props, ref) => { const host = useDistillPageHost(); const injected = host.components?.[name]; return createElement(injected || fallback, injected ? { ...props, ref } : props); });
 }
 const NativeInput = ({ className, ...props }: any) => <input {...props} className={cn('rounded border border-neutral-300 px-2 py-1.5 text-sm', className)} />;
 const NativeTextarea = ({ className, ...props }: any) => <textarea {...props} className={cn('rounded border border-neutral-300 px-2 py-1.5 text-sm', className)} />;

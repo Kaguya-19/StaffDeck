@@ -555,7 +555,7 @@ function lockPendingChangeSkillId(change: PendingChange | null, lockedSkillId: s
 }
 
 export default function DistillPage({ active = true, searchParamsOverride, currentUser, onLogout }: DistillPageProps = {}) {
-  const { navigate, api, notify, streamGet, streamPost, restoreEditorReadSnapshot, saveVersionPolicy } = useDistillPageHost();
+  const { navigate, api, notify, streamGet, streamPost, restoreEditorReadSnapshot, saveVersionPolicy, permitsNativeConflictRecovery, tenantId: TENANT_ID, readEmployeeScope, isTeamScope } = useDistillPageHost();
   const [routerSearchParams] = useSearchParams();
   const searchParams = searchParamsOverride || routerSearchParams;
   const skillId = searchParams.get('skill_id');
@@ -1234,7 +1234,7 @@ export default function DistillPage({ active = true, searchParamsOverride, curre
         try {
           savedSkill = await api.post<SkillRead>(`/api/enterprise/skills${agentOnlyQuery}`, { tenant_id: TENANT_ID, content: finalDraft, status: 'published' });
         } catch (error) {
-          if (!(error instanceof ApiError) || error.status !== 409) throw error;
+          if (!permitsNativeConflictRecovery?.(error)) throw error;
           finalDraft = {
             ...cloneSkill(finalDraft),
             skill_id: uniqueDraftSkillId(finalDraft.skill_id),
@@ -1652,7 +1652,7 @@ export default function DistillPage({ active = true, searchParamsOverride, curre
           createdTool = await api.post<ToolRead>(`/api/enterprise/tools${agentQuery ? `?${agentQuery.slice(1)}` : ''}`, payload);
           createdNewTool = true;
         } catch (error) {
-          if (!(error instanceof ApiError) || error.status !== 409) throw error;
+          if (!permitsNativeConflictRecovery?.(error)) throw error;
           createdTool = toolReadFromSuggestion(suggestion, activeDraft?.skill_id);
         }
         createdTools.push(createdTool);
