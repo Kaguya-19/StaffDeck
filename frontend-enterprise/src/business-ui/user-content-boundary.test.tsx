@@ -6,6 +6,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import SharedKnowledgePage from '@staffdeck/business-ui/KnowledgePage';
 import { KnowledgePageHostProvider } from '@staffdeck/business-ui/KnowledgePageHost';
 import SharedSkillsPage from '@staffdeck/business-ui/SkillsPage';
+import SopVersionDetailDialog from '@staffdeck/business-ui/SopVersionDetailDialog';
 import { SkillsPageHostProvider } from '@staffdeck/business-ui/SkillsPageHost';
 import { knowledgePageHost } from './knowledge-host';
 import { skillsPageHost } from './skills-host';
@@ -153,6 +154,27 @@ describe('resource text boundaries in the actual shared pages', () => {
     const guidance = screen.getByText(/已加载「新增」/);
     expect(boundary(guidance)).toBeNull();
     expect(host.notify.error).not.toHaveBeenCalled();
+  });
+
+  it('keeps version detail labels localizable and user definition values untouched', async () => {
+    const detail = {
+      id: 'version-1', skill_id: '取消', name: '新增', version: '名称', business_domain: '暂无内容',
+      status: 'draft', call_count: 0, positive_rate: 0, negative_rate: 0,
+      updated_at: '2026-09-27', content: { name: '新增', description: '暂无内容', nodes: [] },
+    };
+    render(<I18nProvider><LocaleControl /><SkillsPageHostProvider value={skillsPageHost}>
+      <SopVersionDetailDialog detail={detail} onClose={vi.fn()} />
+    </SkillsPageHostProvider></I18nProvider>);
+    const dialog = screen.getByRole('dialog');
+    expect(boundary(within(dialog).getByText('新增'))).not.toBeNull();
+    expect(boundary(within(dialog).getAllByText('名称')[0])).not.toBeNull();
+    expect(boundary(within(dialog).getByText('暂无内容'))).not.toBeNull();
+    expect(boundary(within(dialog).getByText(/# 新增/))).not.toBeNull();
+    act(() => changeLocale('en-US'));
+    await waitFor(() => expect(within(dialog).getByText('新增').textContent).toBe('新增'));
+    expect(within(dialog).getByText('暂无内容').textContent).toBe('暂无内容');
+    act(() => changeLocale('zh-CN'));
+    expect(within(dialog).getByText('新增').textContent).toBe('新增');
   });
 
 });
