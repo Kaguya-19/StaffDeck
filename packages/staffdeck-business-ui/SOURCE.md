@@ -1,5 +1,10 @@
 # Source Map
 
+Release0.1.11 adds optional selected-row editorQuery and an editor_context cache
+namespace. Portable hosts can bind a selected draftID or published version to
+the normal editor read without overwriting another lifecycle's dirty cache.
+Hosts that omit the hook keep their original route/cache behavior.
+
 Release0.1.10 adds optional mounted Host saveVersionPolicy: when the public
 service allocates a new draft version, review shows that capability rather
 than promising a client-selected version. Native hosts without the hook and
