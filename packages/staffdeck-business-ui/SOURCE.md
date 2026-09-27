@@ -1,5 +1,13 @@
 # Source Map
 
+FormalHostContractHelpers.ts preserves the four original SD01fb898e libraries
+for agent scope, capability catalog events, handoff and clipboard, together
+with normalizeCapabilityScope. Adapter3fa7b145 supplies the extraction and
+clipboard focus-before-range correction. Native library paths, prior Formal
+helper paths, Knowledge/Distill Host exports and the PD helper leaf re-export
+this common source; the shared package never imports a PD-private helper.
+Storage/event keys and source trim/web/null semantics remain unchanged.
+
 Release0.1.13 mechanically extracts formal frontend helper components from
 frontend-enterprise/src/components, chatHelpers, icons and graph helpers into
 Formal*. SD keeps thin wrappers with its original frontend primitives; PD
