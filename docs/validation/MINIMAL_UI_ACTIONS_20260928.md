@@ -1,0 +1,14 @@
+# 9 月 28 日最小链路：独立验收页面动作卡
+
+仅供一组新固定 cleanpair、一个 enabled profile 的独立 fresh 验收。页面动作走正常登录与导航，记录首次请求/响应、页面 AX/DOM、原 owner 持久回读；本卡是入口定位，不预签 PASS。员工/team、高级 Knowledge、审批等待、复杂 SOP、全主题/双语按 [当日范围](/Users/a1/Documents/Codex/2026-09-27/g0-g7-acceptance-preparation/DELIVERY_SCOPE_OPTION_20260928.md)延期。下面路径是应用内路由，保留实际部署 basename；PD 正式入口必须从启用的模块导航进入。
+
+| 顺序 | 两宿主正式入口与共享组件 | 在页面上执行、记录 | 必要 Host primitive / 消费边界 |
+|---|---|---|---|
+| K1 新建/上传 | SD `/enterprise/knowledge` →“新增”菜单“新建知识库”→ `/enterprise/knowledge/new`，`pages/KnowledgePage.tsx`；PD `/knowledge` → `/knowledge/new`，`staffdeck-knowledge.tsx`。均渲染共享 `KnowledgePage` 的 `KnowledgeAddPage`。 | 用固定目标身份选能力范围，拖入或点击上传一份含独有事实的 `.txt/.md/.pdf/.docx` 文档；页面提示“已创建知识库和入库任务”，记返回 KB/job ID。该页“上传文档即创建知识库”，无需假设另有空 KB 创建按钮。 | `KnowledgePageHostProvider`；`CapabilityScopeControl`、`FileDropzone` 原文件输入、`UIButton`、notify；PD 经 `PilotDeckKnowledgePageProvider`、`StaffDeckHostBinding`，文件/任务走正式 Port/adapter。 |
+| K2 任务/读取 | 留在 new 页“入库任务”卡，任务终态后用“返回”或“管理已有知识库”回列表；SD `/enterprise/knowledge`、PD `/knowledge`。 | 等原 job `succeeded`，记录进度/错误与 job 回读；刷新列表，打开同一 KB 的文档卡，核独有事实与引用来源。首个 failed 原件保留，不取消任务或重传挑成功。 | `Progress` 的 `aria-valuenow`、`KnowledgeJobCard`、`DataTable`、`Accordion`、`Dialog/Content/Title`、Markdown／图谱 renderer；PD 同源 vendor/Host map。 |
+| K3 查询/模型引用 | 两宿主 Knowledge 列表下“渐进检索调试”输入框和“检索”；模型回答另走 PD 正常对话入口的已选目标会话。 | 输入只指向该独有事实的问题，记录页面检索结果中的文档、展开来源及“引用来源包”；再在正常 PD 对话中提问，保实际模型/工具轨迹和可定位引用。SD 原生检索/页面作同事实对照；页面调试结果不能代替模型回答。 | `Input`/检索按钮、`ModelConfigDropdown`、`Accordion`、`renderMarkdownBlocks`、引用 renderer；模型与 Knowledge Port 必须真实装配。 |
+| P1 打开/修改 | SD `/enterprise/skills` →选目标行“**SOP 操作**”→“编辑”→ `/enterprise/skills/distill?skill_id=…`；PD `/sop` →相同操作→ `/sop/distill?skill_id=…`。共享 `SkillsPage`/`DistillPage`。也可用列表“新增”建立隔离定义。 | 明确选中目标 draft 行；编辑入口保持原 `draft_id`/`published_version` query。只改原结构内一处可观测内容，并选定义中本来无需审批的合法成功分支。保修改前后结构、dirty/ETag 与目标身份。 | `SkillsPageHostProvider`/`DistillPageHostProvider`、`DataTable`、`DropdownMenu`、`Input/Textarea`、`Select`、graph/Markdown、notify/nav；PD 的正式 provider 与同源 vendor。 |
+| P2 保存/校验/发布 | 编辑器“**保存草稿**”→“**保存SOP版本**”审阅弹窗→“保存”；返回 SOP 列表，对同一 draft 行“**SOP 操作**”→“启用/启用本地版本”。 | 记录审阅 diff 与保存回读、原服务对内容的校验结果；发布请求必须带所选行 `draft_id`，记录发布版本与再读。正式 UI 没有独立“校验”按钮，不能补造一步；保存不等于自动发布，校验失败须保原错误/dirty，不以最新 ETag 救旧内容。 | 原 controlled `Dialog/Content/Title`、`ConfirmDialog`、`UIButton`、`DropdownMenu`、notify；adapter 保原 draft、ETag、错误/权限。 |
+| P3 正常运行 | PD 正常对话入口、同一 enabled profile 的原 SOP 能力；SD 原生路径作定义/状态对照。 | 用自然请求触发刚发布定义中原本无需审批的分支，记录模型/工具/SOP 轨迹、发布版本 pin、运行完成终态与持久回读。不能从 editor preview、runner 直呼、审批绕行或旧 human Continue 代替正常入口。 | `pilotdeck-chat` 正式 `ChatInterfaceV2` + `staffdeck-sop` chat extension；`SopWaitBanner` 的 `external_task` 独立于延期的 human inbox。 |
+
+两侧同源核对：SD `@staffdeck/business-ui/{KnowledgePage,SkillsPage,DistillPage}` 与 PD 对应版本化 `staffdeck/vendor/{KnowledgePage,SkillsPage,DistillPage}` 必须由整合者给出同一固定源码/UPSTREAM 和构建证据。页面出现确定性内容遮挡、控件不可点、Portal/焦点或错误误显时保首轮 AX/DOM/网络原件，再交 UI owner 窄修；仅接口声明或此清单不证明实际可操作。
