@@ -18,6 +18,7 @@ from app.capability_scope import normalize_capability_scope
 from app import paths
 from app.db import engine
 from app.db.models import (
+    APIJob,
     KnowledgeBucket,
     KnowledgeBase,
     KnowledgeChunk,
@@ -210,19 +211,31 @@ class KnowledgeIngestCancelled(RuntimeError):
     """Raised inside the ingest worker when a persisted job is cancelled."""
 
 
-def extract_ingest_text(job: KnowledgeIngestJob, metadata: dict[str, Any], content: bytes) -> tuple[str, str]:
+def extract_ingest_text(job: KnowledgeIngestJob, metadata: dict[str, Any], content: bytes, db: Session | None = None) -> tuple[str, str]:
     """Public jobs use the configured PD file Port; native jobs retain SD parsing."""
     host_origin = (metadata.get("metadata") or {}).get("_pilotdeck_host")
     if host_origin is None:
         return extract_text(job.filename, content)
     if not isinstance(host_origin, dict) or not all(
         isinstance(host_origin.get(key), str) and host_origin[key]
-        for key in ("agent_id", "actor_user_id")
+        for key in ("api_job_id", "agent_id", "actor_user_id")
     ):
         raise RuntimeError("PUBLIC_HOST_INGEST_IDENTITY_INVALID")
     # The original upload path stamps creator identity from get_current_user.
     # A caller-supplied host marker cannot impersonate another actor.
     if (metadata.get("metadata") or {}).get("created_by_user_id") != host_origin["actor_user_id"]:
+        raise RuntimeError("PUBLIC_HOST_INGEST_IDENTITY_INVALID")
+    if db is None:
+        raise RuntimeError("PUBLIC_HOST_INGEST_IDENTITY_INVALID")
+    original = db.get(APIJob, host_origin["api_job_id"])
+    if (original is None or original.tenant_id != job.tenant_id
+        or original.agent_id != host_origin["agent_id"]
+        or original.kind != "knowledge.ingest"
+        or (original.request_json or {}).get("knowledge_base_id") != job.knowledge_base_id):
+        raise RuntimeError("PUBLIC_HOST_INGEST_IDENTITY_INVALID")
+    from app.public_api.runs import _job_actor
+    _, actor = _job_actor(db, original)
+    if actor.id != host_origin["actor_user_id"]:
         raise RuntimeError("PUBLIC_HOST_INGEST_IDENTITY_INVALID")
     from app.public_api.pilotdeck_domain_host import require_pilotdeck_domain_host
     parsed = require_pilotdeck_domain_host().file_parse(
@@ -445,7 +458,7 @@ class KnowledgeService:
             metadata = job.metadata_json or {}
             self._public_host_ingest = (metadata.get("metadata") or {}).get("_pilotdeck_host") is not None
             content = base64.b64decode(str(metadata.get("content_base64") or ""))
-            text, file_type = extract_ingest_text(job, metadata, content)
+            text, file_type = extract_ingest_text(job, metadata, content, self.db)
             self._raise_if_ingest_cancelled(job)
             self._update_ingest_stage(
                 job,
