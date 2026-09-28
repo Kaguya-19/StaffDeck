@@ -296,9 +296,6 @@ def route_sop(
     ]
     routing_skills = discoverable_sops(expand_visible_sops(published))
     db.commit()
-    model_config = model_for_agent(db, principal.tenant_id, agent_id)
-    if model_config is None:
-        raise PublicAPIError(409, "MODEL_NOT_CONFIGURED", "No enabled default model is configured.")
     session = ChatSession(
         id=body.session_id or f"route:{agent_id}",
         tenant_id=principal.tenant_id,
@@ -311,15 +308,25 @@ def route_sop(
         awaiting_input_json=dict(body.awaiting_input) if body.awaiting_input else None,
         status="active",
     )
-    plan = TurnPlanner().plan(
-        body.message,
-        session,
-        routing_skills,
-        model_config,
-        body.conversation_context,
-        None,
-        [],
-    )
+    if body.model_source == "pilotdeck_host":
+        from app.public_api.pilotdeck_domain_host import require_pilotdeck_domain_host
+        try:
+            host = require_pilotdeck_domain_host()
+            plan = host.plan_sop_route(
+                tenant_id=principal.tenant_id, actor_user_id=principal.actor_user.id,
+                agent_id=agent_id, message=body.message, session=session,
+                routing_skills=routing_skills, conversation_context=body.conversation_context,
+            )
+        except RuntimeError as exc:
+            raise PublicAPIError(503, "PUBLIC_HOST_SOP_ROUTE_UNAVAILABLE", str(exc)) from exc
+    else:
+        model_config = model_for_agent(db, principal.tenant_id, agent_id)
+        if model_config is None:
+            raise PublicAPIError(409, "MODEL_NOT_CONFIGURED", "No enabled default model is configured.")
+        plan = TurnPlanner().plan(
+            body.message, session, routing_skills, model_config,
+            body.conversation_context, None, [],
+        )
     selected_frame = next(
         (
             frame

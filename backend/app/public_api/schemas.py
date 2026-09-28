@@ -183,6 +183,7 @@ class SOPPublishRequest(BaseModel):
 
 class SOPRouteRequest(BaseModel):
     message: str = Field(min_length=1)
+    model_source: Literal["staffdeck", "pilotdeck_host"] = "staffdeck"
     session_id: str | None = Field(default=None, max_length=200)
     active_sop_id: str | None = Field(default=None, max_length=200)
     active_step_id: str | None = Field(default=None, max_length=200)

@@ -53,3 +53,25 @@ def test_public_sop_route_uses_visible_discoverable_skills_and_native_router(mon
     assert result["selected_sop_id"] == "purchase"
     assert result["candidate_sop_ids"] == ["purchase", "price_compare"]
     assert captured["skills"] == ["purchase", "price_compare"]
+
+
+def test_public_sop_route_uses_bound_pd_host_without_sd_model_fallback(monkeypatch):
+    from app.public_api import pilotdeck_domain_host
+    visible = [_skill("purchase")]
+    monkeypatch.setattr(sops, "enforce_agent_access", lambda *args, **kwargs: None)
+    monkeypatch.setattr(sops, "ensure_public_agent", lambda *args, **kwargs: None)
+    monkeypatch.setattr(sops, "visible_published_skills", lambda *args, **kwargs: visible)
+    monkeypatch.setattr(sops, "model_for_agent", lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError("SD model read")))
+    calls = []
+    class Host:
+        def plan_sop_route(self, **kwargs):
+            calls.append(kwargs)
+            return TurnPlan(decision="start_new_task", confidence=0.9, task_frames=[
+                PlannedTaskFrame(kind="sop", decision="start_new_task", target_skill_id="purchase", target_step_id="start")])
+    monkeypatch.setattr(pilotdeck_domain_host, "require_pilotdeck_domain_host", lambda: Host())
+    principal = SimpleNamespace(tenant_id="tenant-1", actor_user=SimpleNamespace(id="user-1"))
+    result = sops.route_sop("agent-1", SOPRouteRequest(message="buy", model_source="pilotdeck_host"),
+                            principal, SimpleNamespace(commit=lambda: None))
+    assert result["selected_sop_id"] == "purchase"
+    assert [skill.skill_id for skill in calls[0]["routing_skills"]] == ["purchase"]
+    assert calls[0]["actor_user_id"] == "user-1"
