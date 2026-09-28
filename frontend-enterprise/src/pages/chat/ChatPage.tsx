@@ -1,3 +1,4 @@
+import type { FormalSopApprovalInboxProps } from '@/business-ui/formal-sop-approval-inbox';
 import { type CSSProperties } from 'react';
 
 import AppSidebar from '@/components/AppSidebar';
@@ -12,7 +13,7 @@ import MessageList from './components/MessageList';
 import Composer from './components/Composer';
 import ChatDialogs from './components/ChatDialogs';
 
-export default function ChatPage() {
+export default function ChatPage({ pilotDeckApprovalInbox }: { pilotDeckApprovalInbox?: FormalSopApprovalInboxProps } = {}) {
   const chat = useChatSession();
 
   return (
@@ -60,7 +61,7 @@ export default function ChatPage() {
         <MessageList chat={chat} />
         <Composer chat={chat} />
       </main>
-      <ChatDialogs chat={chat} />
+      <ChatDialogs chat={chat} pilotDeckApprovalInbox={pilotDeckApprovalInbox} />
     </SidebarProvider>
   );
 }

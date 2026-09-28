@@ -1,3 +1,4 @@
+import type { FormalSopApprovalInboxProps } from '@/business-ui/formal-sop-approval-inbox';
 import { type CSSProperties } from 'react';
 
 import { api, TENANT_ID } from '@/api/client';
@@ -12,7 +13,7 @@ import { sessionHasUnreadReply } from './chatHelpers';
 import { useChatSession } from './useChatSession';
 import ChatDialogs from './components/ChatDialogs';
 
-export default function ChatGalleryPage() {
+export default function ChatGalleryPage({ pilotDeckApprovalInbox }: { pilotDeckApprovalInbox?: FormalSopApprovalInboxProps } = {}) {
   const chat = useChatSession();
   const auth = getEnterpriseAuthSession();
   const isAdmin = isEnterpriseAdmin(auth?.user);
@@ -70,7 +71,7 @@ export default function ChatGalleryPage() {
           onLogout={chat.logout}
         />
       </main>
-      <ChatDialogs chat={chat} />
+      <ChatDialogs chat={chat} pilotDeckApprovalInbox={pilotDeckApprovalInbox} />
     </SidebarProvider>
   );
 }

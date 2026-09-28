@@ -1,4 +1,4 @@
-import type { ReactNode } from 'react';
+import FormalSopApprovalInbox, { type FormalSopApprovalInboxProps } from '@/business-ui/formal-sop-approval-inbox';
 import { ConfirmDialog } from '@/components/ConfirmDialog';
 import EmployeeAvatar from '@/components/EmployeeAvatar';
 import { Button } from '@/components/ui/button';
@@ -37,7 +37,7 @@ import {
 import type { UseChatSession } from '../useChatSession';
 import ModelSetupDialog from './ModelSetupDialog';
 
-export default function ChatDialogs({ chat, pilotDeckApprovalInbox }: { chat: UseChatSession; pilotDeckApprovalInbox?: ReactNode }) {
+export default function ChatDialogs({ chat, pilotDeckApprovalInbox }: { chat: UseChatSession; pilotDeckApprovalInbox?: FormalSopApprovalInboxProps }) {
   const {
     showHandoffInbox,
     setShowHandoffInbox,
@@ -83,9 +83,11 @@ export default function ChatDialogs({ chat, pilotDeckApprovalInbox }: { chat: Us
             <DialogTitle>待回答</DialogTitle>
           </DialogHeader>
           {handoffs.length === 0 ? (
-            <div className={CHAT_HANDOFF_EMPTY_CLASS}>
-              {handoffsLoading ? '正在加载待回答消息' : '暂无待回答消息'}
-            </div>
+            pilotDeckApprovalInbox ? null : (
+              <div className={CHAT_HANDOFF_EMPTY_CLASS}>
+                {handoffsLoading ? '正在加载待回答消息' : '暂无待回答消息'}
+              </div>
+            )
           ) : (
             <div className={CHAT_HANDOFF_LIST_CLASS}>
               {handoffs.map((handoff) => {
@@ -136,7 +138,7 @@ export default function ChatDialogs({ chat, pilotDeckApprovalInbox }: { chat: Us
               })}
             </div>
           )}
-          {pilotDeckApprovalInbox}
+          {pilotDeckApprovalInbox && <FormalSopApprovalInbox {...pilotDeckApprovalInbox} />}
         </DialogContent>
       </Dialog>
 
