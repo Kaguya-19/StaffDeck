@@ -330,7 +330,8 @@ def execute_knowledge_ingest(db: Session, job: APIJob) -> dict[str, Any]:
             filename=str(entry.get("filename") or f"{job.id}-{index}.bin"),
             title=str(entry.get("title") or "Knowledge entry"),
             content_base64=str(entry.get("content_base64") or ""),
-            metadata={**dict(entry.get("metadata") or {}), "source_ref": entry.get("source_ref"), "external_id": entry.get("external_id")},
+            metadata={**dict(entry.get("metadata") or {}), "source_ref": entry.get("source_ref"), "external_id": entry.get("external_id"),
+                      "_pilotdeck_host": {"agent_id": str(job.agent_id), "actor_user_id": actor.id}},
         )
         inner = internal_knowledge.upload_document(upload, str(job.agent_id), db, actor)
         while True:

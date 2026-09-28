@@ -210,6 +210,32 @@ class KnowledgeIngestCancelled(RuntimeError):
     """Raised inside the ingest worker when a persisted job is cancelled."""
 
 
+def extract_ingest_text(job: KnowledgeIngestJob, metadata: dict[str, Any], content: bytes) -> tuple[str, str]:
+    """Public jobs use the configured PD file Port; native jobs retain SD parsing."""
+    host_origin = (metadata.get("metadata") or {}).get("_pilotdeck_host")
+    if host_origin is None:
+        return extract_text(job.filename, content)
+    if not isinstance(host_origin, dict) or not all(
+        isinstance(host_origin.get(key), str) and host_origin[key]
+        for key in ("agent_id", "actor_user_id")
+    ):
+        raise RuntimeError("PUBLIC_HOST_INGEST_IDENTITY_INVALID")
+    # The original upload path stamps creator identity from get_current_user.
+    # A caller-supplied host marker cannot impersonate another actor.
+    if (metadata.get("metadata") or {}).get("created_by_user_id") != host_origin["actor_user_id"]:
+        raise RuntimeError("PUBLIC_HOST_INGEST_IDENTITY_INVALID")
+    from app.public_api.pilotdeck_domain_host import require_pilotdeck_domain_host
+    parsed = require_pilotdeck_domain_host().file_parse(
+        tenant_id=job.tenant_id,
+        actor_user_id=host_origin["actor_user_id"],
+        agent_id=host_origin["agent_id"],
+        filename=job.filename,
+        content_base64=str(metadata.get("content_base64") or ""),
+        media_type=(metadata.get("metadata") or {}).get("content_type"),
+    )
+    return parsed["text"], parsed["metadata"]["fileType"]
+
+
 class KnowledgeService:
     def __init__(self, db: Session):
         self.db = db
@@ -417,7 +443,7 @@ class KnowledgeService:
             )
             metadata = job.metadata_json or {}
             content = base64.b64decode(str(metadata.get("content_base64") or ""))
-            text, file_type = extract_text(job.filename, content)
+            text, file_type = extract_ingest_text(job, metadata, content)
             self._raise_if_ingest_cancelled(job)
             self._update_ingest_stage(
                 job,
