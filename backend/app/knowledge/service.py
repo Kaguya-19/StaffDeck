@@ -114,6 +114,7 @@ class IngestPayload:
     knowledge_base_version_id: str | None = None
     title: str | None = None
     metadata: dict[str, Any] | None = None
+    host_origin: dict[str, Any] | None = None
 
 
 class KnowledgeDiscoveryValidationError(ValueError):
@@ -213,30 +214,41 @@ class KnowledgeIngestCancelled(RuntimeError):
 
 def extract_ingest_text(job: KnowledgeIngestJob, metadata: dict[str, Any], content: bytes, db: Session | None = None) -> tuple[str, str]:
     """Public jobs use the configured PD file Port; native jobs retain SD parsing."""
-    host_origin = (metadata.get("metadata") or {}).get("_pilotdeck_host")
+    host_origin = metadata.get("_pilotdeck_host")
     if host_origin is None:
         return extract_text(job.filename, content)
     if not isinstance(host_origin, dict) or not all(
         isinstance(host_origin.get(key), str) and host_origin[key]
-        for key in ("api_job_id", "agent_id", "actor_user_id")
-    ):
+        for key in ("agent_id", "actor_user_id")
+    ) or bool(host_origin.get("api_job_id")) == bool(host_origin.get("credential_id")):
         raise RuntimeError("PUBLIC_HOST_INGEST_IDENTITY_INVALID")
-    # The original upload path stamps creator identity from get_current_user.
-    # A caller-supplied host marker cannot impersonate another actor.
+    # The native upload stamps this creator from its authenticated User.
     if (metadata.get("metadata") or {}).get("created_by_user_id") != host_origin["actor_user_id"]:
         raise RuntimeError("PUBLIC_HOST_INGEST_IDENTITY_INVALID")
     if db is None:
         raise RuntimeError("PUBLIC_HOST_INGEST_IDENTITY_INVALID")
-    original = db.get(APIJob, host_origin["api_job_id"])
-    if (original is None or original.tenant_id != job.tenant_id
-        or original.agent_id != host_origin["agent_id"]
-        or original.kind != "knowledge.ingest"
-        or (original.request_json or {}).get("knowledge_base_id") != job.knowledge_base_id):
-        raise RuntimeError("PUBLIC_HOST_INGEST_IDENTITY_INVALID")
-    from app.public_api.runs import _job_actor
-    _, actor = _job_actor(db, original)
-    if actor.id != host_origin["actor_user_id"]:
-        raise RuntimeError("PUBLIC_HOST_INGEST_IDENTITY_INVALID")
+    if host_origin.get("api_job_id"):
+        original = db.get(APIJob, host_origin["api_job_id"])
+        if (original is None or original.tenant_id != job.tenant_id
+            or original.agent_id != host_origin["agent_id"]
+            or original.kind != "knowledge.ingest"
+            or (original.request_json or {}).get("knowledge_base_id") != job.knowledge_base_id):
+            raise RuntimeError("PUBLIC_HOST_INGEST_IDENTITY_INVALID")
+        from app.public_api.runs import _job_actor
+        _, actor = _job_actor(db, original)
+        if actor.id != host_origin["actor_user_id"]:
+            raise RuntimeError("PUBLIC_HOST_INGEST_IDENTITY_INVALID")
+    else:
+        from app.public_api.auth import principal_for_credential, enforce_agent_access
+        from app.public_api.sessions import ensure_public_agent
+        from app.security.permissions import ensure_agent_scope_manager
+        principal = principal_for_credential(db, host_origin["credential_id"])
+        if (principal.tenant_id != job.tenant_id or principal.actor_user.id != host_origin["actor_user_id"]
+            or not principal.can("knowledge:write")):
+            raise RuntimeError("PUBLIC_HOST_INGEST_IDENTITY_INVALID")
+        enforce_agent_access(principal, host_origin["agent_id"], write=True)
+        ensure_public_agent(db, principal, host_origin["agent_id"])
+        ensure_agent_scope_manager(db, principal.tenant_id, host_origin["agent_id"], principal.actor_user)
     from app.public_api.pilotdeck_domain_host import require_pilotdeck_domain_host
     parsed = require_pilotdeck_domain_host().file_parse(
         tenant_id=job.tenant_id,
@@ -268,6 +280,7 @@ class KnowledgeService:
                 "content_base64": payload.content_base64,
                 "title": payload.title,
                 "metadata": payload.metadata or {},
+                **({"_pilotdeck_host": payload.host_origin} if payload.host_origin is not None else {}),
             },
         )
         self.db.add(job)
@@ -456,7 +469,7 @@ class KnowledgeService:
                 detail="正在识别文件格式并抽取正文",
             )
             metadata = job.metadata_json or {}
-            self._public_host_ingest = (metadata.get("metadata") or {}).get("_pilotdeck_host") is not None
+            self._public_host_ingest = metadata.get("_pilotdeck_host") is not None
             content = base64.b64decode(str(metadata.get("content_base64") or ""))
             text, file_type = extract_ingest_text(job, metadata, content, self.db)
             self._raise_if_ingest_cancelled(job)

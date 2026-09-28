@@ -16,6 +16,7 @@ from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, ConfigDict, Field
 from sqlmodel import Session, select
 
+from app.capability_scope import CapabilityScope
 from app.agents.branching import get_agent
 from app.api import agents as native_agents
 from app.api import general_skills as native_general_skills
@@ -293,6 +294,34 @@ def get_knowledge_document(
 ) -> Any:
     enforce_public_knowledge_pep(db, principal, agent_id, knowledge_base_id=knowledge_base_id, document_id=document_id)
     return _payload(native_knowledge.get_document(document_id, principal.tenant_id, agent_id, db))
+
+
+@router.post("/agents/{agent_id}/knowledge/documents:auto-create")
+async def upload_knowledge_document_auto_facade(
+    agent_id: str, file: UploadFile = File(...), title: str | None = Form(default=None),
+    capability_scope: CapabilityScope = Form(default="general"),
+    principal: PublicPrincipal = Depends(require_scopes("knowledge:write")),
+    db: Session = Depends(get_session),
+) -> Any:
+    """One native owner operation creates its private KB, version and ingest job."""
+    enforce_public_knowledge_pep(db, principal, agent_id, write=True)
+    if not principal.credential_id:
+        raise PublicAPIError(403, "PUBLIC_INGEST_CREDENTIAL_REQUIRED", "Deferred import requires an active account credential.")
+    content = await file.read()
+    if len(content) > 20 * 1024 * 1024:
+        raise PublicAPIError(413, "DOCUMENT_TOO_LARGE", "Documents are limited to 20 MB.")
+    request = KnowledgeDocumentUploadRequest(
+        tenant_id=principal.tenant_id, knowledge_base_id=None,
+        filename=file.filename or "document.bin", title=title,
+        content_base64=base64.b64encode(content).decode("ascii"),
+        capability_scope=capability_scope,
+        metadata={"content_type": file.content_type},
+    )
+    return _payload(native_knowledge.upload_document_for_public_host(
+        request, agent_id, db, principal.actor_user,
+        host_origin={"credential_id": principal.credential_id,
+                     "agent_id": agent_id, "actor_user_id": principal.actor_user.id},
+    ))
 
 
 @router.post("/agents/{agent_id}/knowledge-bases/{knowledge_base_id}/documents")

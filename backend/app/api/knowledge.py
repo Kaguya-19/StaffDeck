@@ -90,8 +90,33 @@ def upload_document(
     db: Session = Depends(get_session),
     current_user: User = Depends(get_current_user),
 ) -> KnowledgeIngestJobRead:
+    return _upload_document_owner(request, agent_id, db, current_user)
+
+
+def upload_document_for_public_host(
+    request: KnowledgeDocumentUploadRequest,
+    agent_id: str,
+    db: Session,
+    current_user: User,
+    *,
+    host_origin: dict[str, str],
+) -> KnowledgeIngestJobRead:
+    """Server-only admission: host identity is never a public request field."""
+    return _upload_document_owner(request, agent_id, db, current_user, host_origin=host_origin)
+
+
+def _upload_document_owner(
+    request: KnowledgeDocumentUploadRequest,
+    agent_id: str | None,
+    db: Session,
+    current_user: User,
+    *,
+    host_origin: dict[str, str] | None = None,
+) -> KnowledgeIngestJobRead:
     ensure_tenant(db, request.tenant_id)
-    creator_metadata = user_creator_metadata(current_user, request.metadata or {})
+    source_metadata = dict(request.metadata or {})
+    source_metadata.pop("_pilotdeck_host", None)
+    creator_metadata = user_creator_metadata(current_user, source_metadata)
     knowledge_base = _resolve_upload_knowledge_base(
         db,
         request,
@@ -117,6 +142,7 @@ def upload_document(
             content_base64=request.content_base64,
             title=request.title,
             metadata=creator_metadata,
+            host_origin=host_origin,
         )
     )
     enqueue_async_job(
@@ -906,7 +932,7 @@ def job_read(row: KnowledgeIngestJob) -> KnowledgeIngestJobRead:
         metadata={
             key: value
             for key, value in (row.metadata_json or {}).items()
-            if key != "content_base64"
+            if key not in {"content_base64", "_pilotdeck_host"}
         },
         created_at=row.created_at.isoformat(),
         started_at=row.started_at.isoformat() if row.started_at else None,
