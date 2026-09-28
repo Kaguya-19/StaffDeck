@@ -20,6 +20,12 @@ def _knowledge_route_deps(host: Any):
     deps = host._deps()
     if getattr(host, "execution_engine", "harness_v3") != "harness_v3" or deps.model_config is None:
         return deps
+    from app.public_api.pilotdeck_harness_model import PilotDeckHarnessModel
+    if isinstance(deps.model_config, PilotDeckHarnessModel):
+        # SD Knowledge keeps the established public-host lexical retrieval path;
+        # the outer Harness dialogue still uses the selected PD model Port. A
+        # non-persistent PD selection is never converted into an SD LLMClient.
+        return replace(deps, model_config=None)
     from app.config import get_settings
 
     ceiling = max(0.1, float(get_settings().harness_v3_knowledge_route_timeout_seconds))

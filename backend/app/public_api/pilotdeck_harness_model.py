@@ -84,3 +84,43 @@ def stream_model_events(selection: PilotDeckHarnessModel, request: dict[str, Any
                     if not isinstance(event, dict) or not isinstance(event.get("type"), str):
                         raise RuntimeError("PUBLIC_HOST_MODEL_STREAM_INVALID")
                     yield event
+
+
+def generate_harness_json(selection: PilotDeckHarnessModel, system_prompt: str,
+                          user_payload: dict[str, Any]) -> Any:
+    """Use the original JSON repair policy with the same authenticated PD Port."""
+    from app.llm.client import (LLMClient, _prepare_user_input, _request_messages,
+                                _with_json_mode_instruction)
+    from staffdeck_harness.bridge.pilotdeck_model_wire import canonical_request
+
+    class PublicJsonClient(LLMClient):
+        def __init__(self):
+            pass
+
+        def generate_text(self, prompt, payload, cancellation=None, **kwargs):
+            return self._generate_json_candidate(prompt, payload, False, cancellation)
+
+        def _generate_json_candidate(self, prompt, payload, json_mode_supported, cancellation=None):
+            if cancellation is not None and getattr(cancellation, "cancelled", False):
+                raise RuntimeError("PUBLIC_HOST_MODEL_CANCELLED")
+            context, serialized = _prepare_user_input(payload)
+            messages = _with_json_mode_instruction(_request_messages(prompt, context, serialized))
+            if not messages or messages[0].get("role") != "system":
+                raise RuntimeError("PUBLIC_HOST_MODEL_PROMPT_INVALID")
+            canonical = canonical_request({"messages": messages, "stream": True}, selection)
+            fragments = []
+            ended = False
+            for event in stream_model_events(selection, canonical):
+                if event["type"] == "text_delta" and isinstance(event.get("text"), str):
+                    fragments.append(event["text"])
+                elif event["type"] == "message_end":
+                    if event.get("finishReason") != "stop":
+                        raise RuntimeError("PUBLIC_HOST_MODEL_INCOMPLETE")
+                    ended = True
+                elif event["type"] == "error":
+                    raise RuntimeError("PUBLIC_HOST_MODEL_FAILED")
+            if not ended or not fragments:
+                raise RuntimeError("PUBLIC_HOST_MODEL_INCOMPLETE")
+            return "".join(fragments)
+
+    return PublicJsonClient().generate_json(system_prompt, user_payload)

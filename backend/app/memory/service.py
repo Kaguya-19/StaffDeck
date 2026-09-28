@@ -78,17 +78,23 @@ class MemoryService:
             agent_id=agent_id,
         )
         with llm_operation("memory.capture", existing_count=len(existing_rows)):
-            raw_delta = LLMClient(model_config).generate_json(
-                PROMPT_PATH.read_text(encoding="utf-8"),
-                {
-                    "conversation_context": {
-                        "messages": conversation_messages
-                    },
-                    "existing_memories": _memories_for_model(existing_rows),
-                    "step_result": compact_step_result(step_result.model_dump(mode="json")),
-                    "tool_result": tool_result.model_dump(mode="json") if tool_result else None,
-                },
+            payload = {
+                "conversation_context": {"messages": conversation_messages},
+                "existing_memories": _memories_for_model(existing_rows),
+                "step_result": compact_step_result(step_result.model_dump(mode="json")),
+                "tool_result": tool_result.model_dump(mode="json") if tool_result else None,
+            }
+            from app.public_api.pilotdeck_harness_model import (
+                PilotDeckHarnessModel, generate_harness_json,
             )
+            if isinstance(model_config, PilotDeckHarnessModel):
+                raw_delta = generate_harness_json(
+                    model_config, PROMPT_PATH.read_text(encoding="utf-8"), payload,
+                )
+            else:
+                raw_delta = LLMClient(model_config).generate_json(
+                    PROMPT_PATH.read_text(encoding="utf-8"), payload,
+                )
         records: list[MemoryRecord] = []
         for update in _normalize_memory_updates(raw_delta):
             if update["operation"] == "delete":

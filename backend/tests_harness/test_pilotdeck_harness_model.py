@@ -1,5 +1,6 @@
 """The normal Harness gateway consumes the fixed, authenticated PD model Port."""
 import json
+from dataclasses import dataclass
 from types import SimpleNamespace
 
 import httpx
@@ -9,7 +10,9 @@ from starlette.testclient import TestClient
 
 from app.public_api import pilotdeck_domain_host as domain
 from app.public_api.pilotdeck_domain_binding import FixedPilotDeckDomainHostClient
-from app.public_api.pilotdeck_harness_model import select_harness_model
+from app.public_api.pilotdeck_harness_model import (
+    PilotDeckHarnessModel, generate_harness_json, select_harness_model,
+)
 from staffdeck_harness.bridge.capability_mcp import ActivationRegistry
 from staffdeck_harness.bridge.model_gateway import CHAT_COMPLETIONS_PATH, ModelGateway
 
@@ -84,3 +87,37 @@ def test_pd_model_port_failure_does_not_read_sd_model():
             select_harness_model(SimpleNamespace(tenant_id="tenant", user_id="actor", staff_id="target"))
     finally:
         domain._bound_client = previous
+
+
+def test_pd_harness_knowledge_retrieval_keeps_domain_route_without_sd_llm():
+    from staffdeck_harness.capabilities.local_services import _knowledge_route_deps
+
+    @dataclass
+    class Deps:
+        model_config: object
+
+    selection = PilotDeckHarnessModel("logical", "provider", "logical",
+        FixedPilotDeckDomainHostClient("http://pd", "bridge", "pd-user",
+            None, "tenant", "actor", "target"), {})
+    host = SimpleNamespace(execution_engine="harness_v3", _deps=lambda: Deps(selection))
+    assert _knowledge_route_deps(host).model_config is None
+
+
+def test_background_json_uses_same_authenticated_pd_port():
+    seen = []
+    def handle(request):
+        call = json.loads(request.content)
+        seen.append(call)
+        assert request.headers["authorization"] == "Bearer bridge"
+        assert call["operation"] == "model_stream"
+        assert call["principal"]["actorUserId"] == "actor"
+        assert call["input"]["request"]["provider"] == "provider"
+        return httpx.Response(200, headers={"content-type": "application/x-ndjson"},
+            text='{"type":"text_delta","text":"{\\"updates\\":[]}"}\n'
+                 '{"type":"message_end","finishReason":"stop"}\n')
+    bound = FixedPilotDeckDomainHostClient("http://pd", "bridge", "pd-user",
+        httpx.MockTransport(handle), "tenant", "actor", "target")
+    selection = PilotDeckHarnessModel("logical", "provider", "logical", bound,
+        {"pilotDeckUserId": "pd-user", "tenantId": "tenant", "actorUserId": "actor", "agentId": "target"})
+    assert generate_harness_json(selection, "Return JSON", {"fact": "x"}) == {"updates": []}
+    assert len(seen) == 1
