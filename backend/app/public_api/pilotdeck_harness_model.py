@@ -24,6 +24,9 @@ class PilotDeckHarnessModel:
     model: str
     host: FixedPilotDeckDomainHostClient
     principal: dict[str, str]
+    # Internal turn deadline hint. It is never part of the PD model selection
+    # or canonical request; Knowledge routing may derive a shorter local wait.
+    timeout_seconds: float | None = None
 
 
 def select_harness_model(context: Any, model_id: str | None = None) -> PilotDeckHarnessModel:
@@ -65,7 +68,7 @@ def select_harness_model(context: Any, model_id: str | None = None) -> PilotDeck
 def stream_model_events(selection: PilotDeckHarnessModel, request: dict[str, Any]):
     """Yield validated canonical events from the existing authenticated Port."""
     with httpx.Client(base_url=selection.host.origin, transport=selection.host.transport,
-                      timeout=None, follow_redirects=False) as client:
+                      timeout=selection.timeout_seconds, follow_redirects=False) as client:
         with client.stream("POST", "/api/module-host/call",
                            headers={"Authorization": f"Bearer {selection.host.bridge_token}"},
                            json={"principal": selection.principal, "operation": "model_stream",

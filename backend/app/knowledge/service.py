@@ -52,6 +52,16 @@ from app.observability.spans import llm_operation, observed_span
 from app.skills.skill_schema import SkillCard, SkillGraphEdge, SkillGraphNode
 
 
+def _generate_knowledge_json(model_config: Any, prompt: str, payload: dict[str, Any]) -> Any:
+    """Preserve SD Knowledge's model routing on the selected public PD Port."""
+    from app.public_api.pilotdeck_harness_model import (
+        PilotDeckHarnessModel, generate_harness_json,
+    )
+    if isinstance(model_config, PilotDeckHarnessModel):
+        return generate_harness_json(model_config, prompt, payload)
+    return LLMClient(model_config).generate_json(prompt, payload)
+
+
 PROMPT_DIR = paths.resource_dir() / "app" / "llm" / "prompts"
 BUCKET_PROMPT = PROMPT_DIR / "knowledge_bucket_prompt.md"
 DISCOVERY_PROMPT = PROMPT_DIR / "knowledge_discovery_prompt.md"
@@ -1169,7 +1179,7 @@ class KnowledgeService:
         }
         try:
             with llm_operation("knowledge.discovery", bucket_count=len(buckets)):
-                raw = LLMClient(model_config).generate_json(
+                raw = _generate_knowledge_json(model_config,
                     DISCOVERY_PROMPT.read_text(encoding="utf-8"), payload
                 )
         except (LLMError, Exception):
@@ -1244,7 +1254,7 @@ class KnowledgeService:
         }
         try:
             with llm_operation("knowledge.ingest_bucket", section_count=len(section_nodes)):
-                raw = LLMClient(model_config).generate_json(
+                raw = _generate_knowledge_json(model_config,
                     BUCKET_PROMPT.read_text(encoding="utf-8"), payload
                 )
         except (LLMError, Exception):
@@ -1306,7 +1316,7 @@ class KnowledgeService:
         }
         try:
             with llm_operation("knowledge.document_route", candidate_count=len(documents)):
-                raw = LLMClient(model_config).generate_json(
+                raw = _generate_knowledge_json(model_config,
                     DOCUMENT_ROUTE_PROMPT.read_text(encoding="utf-8"), payload
                 )
         except (LLMError, Exception) as exc:
@@ -1352,7 +1362,7 @@ class KnowledgeService:
         }
         try:
             with llm_operation("knowledge.bucket_route", candidate_count=len(buckets)):
-                raw = LLMClient(model_config).generate_json(
+                raw = _generate_knowledge_json(model_config,
                     SEARCH_PROMPT.read_text(encoding="utf-8"), payload
                 )
         except (LLMError, Exception) as exc:

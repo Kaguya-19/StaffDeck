@@ -89,18 +89,22 @@ def test_pd_model_port_failure_does_not_read_sd_model():
         domain._bound_client = previous
 
 
-def test_pd_harness_knowledge_retrieval_keeps_domain_route_without_sd_llm():
+def test_pd_harness_knowledge_route_keeps_model_and_bounds_local_timeout():
     from staffdeck_harness.capabilities.local_services import _knowledge_route_deps
 
     @dataclass
     class Deps:
         model_config: object
+        remaining_seconds: object = None
 
     selection = PilotDeckHarnessModel("logical", "provider", "logical",
         FixedPilotDeckDomainHostClient("http://pd", "bridge", "pd-user",
             None, "tenant", "actor", "target"), {})
     host = SimpleNamespace(execution_engine="harness_v3", _deps=lambda: Deps(selection))
-    assert _knowledge_route_deps(host).model_config is None
+    routed = _knowledge_route_deps(host).model_config
+    assert isinstance(routed, PilotDeckHarnessModel)
+    assert routed.id == selection.id and routed.principal == selection.principal
+    assert routed.timeout_seconds is not None and routed.timeout_seconds > 0
 
 
 def test_background_json_uses_same_authenticated_pd_port():
@@ -118,6 +122,19 @@ def test_background_json_uses_same_authenticated_pd_port():
     bound = FixedPilotDeckDomainHostClient("http://pd", "bridge", "pd-user",
         httpx.MockTransport(handle), "tenant", "actor", "target")
     selection = PilotDeckHarnessModel("logical", "provider", "logical", bound,
-        {"pilotDeckUserId": "pd-user", "tenantId": "tenant", "actorUserId": "actor", "agentId": "target"})
+        {"pilotDeckUserId": "pd-user", "tenantId": "tenant", "actorUserId": "actor", "agentId": "target"},
+        timeout_seconds=3.0)
     assert generate_harness_json(selection, "Return JSON", {"fact": "x"}) == {"updates": []}
     assert len(seen) == 1
+    assert "timeout_seconds" not in json.dumps(seen[0]["input"])
+
+
+def test_knowledge_json_uses_pd_selection_without_sd_client(monkeypatch):
+    from app.knowledge import service
+    selection = PilotDeckHarnessModel("logical", "provider", "logical",
+        FixedPilotDeckDomainHostClient("http://pd", "bridge", "pd-user",
+            None, "tenant", "actor", "target"), {})
+    monkeypatch.setattr(service, "LLMClient", lambda *_: pytest.fail("SD model client used"))
+    monkeypatch.setattr("app.public_api.pilotdeck_harness_model.generate_harness_json",
+                        lambda model, prompt, payload: {"selected_document_ids": ["doc"]})
+    assert service._generate_knowledge_json(selection, "route", {"query": "fact"}) == {"selected_document_ids": ["doc"]}
