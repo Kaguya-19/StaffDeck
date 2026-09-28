@@ -133,6 +133,10 @@ class ModelGateway:
         if not isinstance(body, dict) or not isinstance(body.get("messages"), list):
             return _error(400, "MALFORMED_REQUEST", "messages must be a list")
 
+        from app.public_api.pilotdeck_harness_model import PilotDeckHarnessModel
+        if isinstance(model_config, PilotDeckHarnessModel):
+            return await self._pilotdeck_completion(act, model_config, body)
+
         try:
             client = self._client_factory(model_config)
         except Exception as exc:  # noqa: BLE001 — bad credentials / unsupported protocol
@@ -222,6 +226,93 @@ class ModelGateway:
                 yield f"data: {json.dumps({'error': {'code': 'PROVIDER_ERROR', 'message': provider_error_message(exc)}})}\n\n".encode()
 
         return StreamingResponse(body_iter(), media_type="text/event-stream", headers={"cache-control": "no-cache", "x-accel-buffering": "no"})
+
+    async def _pilotdeck_completion(self, act: Any, selection: Any, body: dict[str, Any]):
+        from app.public_api.pilotdeck_harness_model import stream_model_events
+        from staffdeck_harness.bridge.pilotdeck_model_wire import (
+            UnsupportedModelWire, canonical_request, openai_chunks,
+        )
+        wire = dict(body)
+        wire["messages"] = _vision_messages(body["messages"], getattr(act.host, "image_payloads", ()))
+        allowed_names = getattr(act.host, "model_tool_names", None)
+        if callable(allowed_names) and isinstance(wire.get("tools"), list):
+            allowed = {f"mcp__staffdeck__{name}" for name in allowed_names()}
+            wire["tools"] = [tool for tool in wire["tools"] if isinstance(tool, dict)
+                             and (tool.get("function") or {}).get("name") in allowed]
+            if not wire["tools"]:
+                wire.pop("tools")
+                wire.pop("tool_choice", None)
+            elif (getattr(getattr(act.host, "requirement", None), "kind", None) == "sop"
+                  and allowed == {"mcp__staffdeck__submit_step_result"}):
+                wire["tool_choice"] = {"type": "function", "function": {"name": "mcp__staffdeck__submit_step_result"}}
+        try:
+            canonical = canonical_request(wire, selection)
+        except (UnsupportedModelWire, KeyError, TypeError) as exc:
+            return _error(400, "UNSUPPORTED_MODEL_WIRE", str(exc))
+        trace = getattr(act.host, "trace", None)
+        started = time.perf_counter()
+        span = {"operation": f"harness_v3.{getattr(act.host, 'phase', None) or 'step'}",
+                "model": selection.model, "model_name": selection.id,
+                "endpoint": "pilotdeck-public-model-port", "request_kind": "canonical.model_stream",
+                "stream": bool(body.get("stream", True)), "request_message_count": len(body["messages"]),
+                "tool_count": len(canonical.get("tools") or []), "engine": "harness_v3"}
+        if trace:
+            trace("llm_call_started", dict(span))
+        loop = __import__("asyncio").get_running_loop()
+        chunks = openai_chunks(stream_model_events(selection, canonical), selection)
+
+        if not body.get("stream", True):
+            try:
+                received = await loop.run_in_executor(None, list, chunks)
+                content = "".join(choice.get("delta", {}).get("content", "")
+                                  for chunk in received for choice in chunk.get("choices", []))
+                reason = next((choice["finish_reason"] for chunk in received
+                               for choice in chunk.get("choices", []) if choice.get("finish_reason")), "stop")
+                calls = {}
+                for chunk in received:
+                    for choice in chunk.get("choices", []):
+                        for item in choice.get("delta", {}).get("tool_calls", []):
+                            entry = calls.setdefault(item["index"], {"id": "", "type": "function",
+                                "function": {"name": "", "arguments": ""}})
+                            if item.get("id"):
+                                entry["id"] = item["id"]
+                            for key in ("name", "arguments"):
+                                entry["function"][key] += item.get("function", {}).get(key, "")
+                message = {"role": "assistant", "content": content}
+                if calls:
+                    message["tool_calls"] = [calls[index] for index in sorted(calls)]
+                usage = next((chunk["usage"] for chunk in received if "usage" in chunk), None)
+                result = {"id": "pd-host", "object": "chat.completion", "model": selection.model,
+                          "choices": [{"index": 0, "message": message, "finish_reason": reason}]}
+                if usage:
+                    result["usage"] = usage
+                if trace:
+                    trace("llm_call_finished", {**span, "duration_ms": _ms(started), "status": "success"})
+                return JSONResponse(result)
+            except Exception as exc:  # noqa: BLE001
+                act.host.model_error = str(exc)
+                if trace:
+                    trace("llm_call_failed", {**span, "duration_ms": _ms(started), "error": str(exc)})
+                return _error(502, "PUBLIC_HOST_MODEL_FAILED", str(exc))
+
+        async def body_iter() -> AsyncIterator[bytes]:
+            try:
+                while True:
+                    chunk = await loop.run_in_executor(None, next, chunks, None)
+                    if chunk is None:
+                        break
+                    yield f"data: {json.dumps(chunk, ensure_ascii=False)}\n\n".encode()
+                yield b"data: [DONE]\n\n"
+                if trace:
+                    trace("llm_call_finished", {**span, "duration_ms": _ms(started), "status": "success"})
+            except Exception as exc:  # noqa: BLE001
+                act.host.model_error = str(exc)
+                if trace:
+                    trace("llm_call_failed", {**span, "duration_ms": _ms(started), "error": str(exc)})
+                yield f"data: {json.dumps({'error': {'code': 'PUBLIC_HOST_MODEL_FAILED', 'message': str(exc)}})}\n\n".encode()
+
+        return StreamingResponse(body_iter(), media_type="text/event-stream",
+                                 headers={"cache-control": "no-cache", "x-accel-buffering": "no"})
 
     # -- request shaping ----------------------------------------------------------
 

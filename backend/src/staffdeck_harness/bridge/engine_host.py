@@ -264,8 +264,18 @@ class HarnessV3Engine(TurnCoordinator):
         from staffdeck_harness.contracts.manifest import SlotName
         self.manifests = SnapshotManifestBuilder(self)
         source = resolve_source(self.registry, SlotName.STAFF_SOURCE, self.db)
-        self.services.get_request_model = lambda req, aid=None: source.model(
-            source_context(req, session_id=session.id, staff_id=aid), req.model_config_id)
+        def request_model(req, aid=None):
+            context = source_context(req, session_id=session.id, staff_id=aid)
+            # The deployment's explicit PD domain binding selects the sole model
+            # source for this authorized Harness turn. A failed Port never reads
+            # the SD model table as a fallback.
+            import os
+            if os.environ.get("PILOTDECK_DOMAIN_HOST_ENABLED", "false").lower() in {"true", "1"}:
+                from app.public_api.pilotdeck_harness_model import select_harness_model
+                return select_harness_model(context, req.model_config_id)
+            return source.model(context, req.model_config_id)
+
+        self.services.get_request_model = request_model
         self.services.get_persona_prompt = lambda *args: self.snapshot.persona
         self.services.get_agent_loop_max_actions = lambda *args: self.snapshot.session_policy["max_actions"]
         if hasattr(self.events, "execution_engine"):
