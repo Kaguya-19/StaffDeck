@@ -29,6 +29,18 @@ class FixedPilotDeckDomainHostClient(PilotDeckDomainHostClient):
             filename=filename, content_base64=content_base64, media_type=media_type,
         )
 
+    def plan_sop_route(self, *, tenant_id, actor_user_id, agent_id, message,
+                       session, routing_skills, conversation_context):
+        if (tenant_id, actor_user_id, agent_id) != (
+            self.tenant_id, self.actor_user_id, self.agent_id
+        ):
+            raise RuntimeError("PUBLIC_HOST_FIXED_IDENTITY_MISMATCH")
+        return super().plan_sop_route(
+            tenant_id=tenant_id, actor_user_id=actor_user_id, agent_id=agent_id,
+            message=message, session=session, routing_skills=routing_skills,
+            conversation_context=conversation_context,
+        )
+
 
 def bind_pilotdeck_domain_client(public_app, env=None) -> None:
     values = os.environ if env is None else env

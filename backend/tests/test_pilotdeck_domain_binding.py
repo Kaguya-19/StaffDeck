@@ -30,6 +30,12 @@ def test_domain_binding_uses_normal_gateway_credential_and_explicit_pd_user(tmp_
         client.file_parse(tenant_id="other", actor_user_id="original-sd-actor",
                           agent_id="original-target", filename="facts.md",
                           content_base64="", media_type=None)
+    with pytest.raises(RuntimeError, match="PUBLIC_HOST_FIXED_IDENTITY_MISMATCH"):
+        client.plan_sop_route(
+            tenant_id="original-tenant", actor_user_id="other",
+            agent_id="original-target", message="route", session=None,
+            routing_skills=[], conversation_context=None,
+        )
 
 
 def test_disabled_domain_binding_is_inert_and_enabled_missing_identity_fails(monkeypatch):
