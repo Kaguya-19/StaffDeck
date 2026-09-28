@@ -45,7 +45,23 @@ def test_pd_host_route_rejects_missing_selection_without_model_request(monkeypat
     client = PilotDeckDomainHostClient("http://pd", "bridge", "pd-user", httpx.MockTransport(handle))
     from app.core.turn_planner import TurnPlanner
     monkeypatch.setattr(TurnPlanner, "prepare_payload", lambda *args, **kwargs: {})
-    with pytest.raises(RuntimeError, match="PUBLIC_HOST_MODEL_SELECTION_UNBOUND"):
+    with pytest.raises(RuntimeError, match="PUBLIC_HOST_MODEL_SELECTION_AMBIGUOUS"):
+        client.plan_sop_route(tenant_id="tenant", actor_user_id="actor", agent_id="target",
+            message="buy", session=SimpleNamespace(), routing_skills=[], conversation_context=None)
+    assert calls == ["list_model_catalog"]
+
+
+def test_pd_host_route_rejects_second_available_model_before_stream(monkeypatch):
+    calls = []
+    def handle(request):
+        calls.append(json.loads(request.content)["operation"])
+        return httpx.Response(200, json={"defaultSelection": {"mode": "model", "provider": "p", "model": "one"},
+            "data": [{"id": "p/one", "provider": "p", "model": "one", "available": True},
+                     {"id": "p/two", "provider": "p", "model": "two", "available": True}]})
+    client = PilotDeckDomainHostClient("http://pd", "bridge", "pd-user", httpx.MockTransport(handle))
+    from app.core.turn_planner import TurnPlanner
+    monkeypatch.setattr(TurnPlanner, "prepare_payload", lambda *args, **kwargs: {})
+    with pytest.raises(RuntimeError, match="PUBLIC_HOST_MODEL_SELECTION_AMBIGUOUS"):
         client.plan_sop_route(tenant_id="tenant", actor_user_id="actor", agent_id="target",
             message="buy", session=SimpleNamespace(), routing_skills=[], conversation_context=None)
     assert calls == ["list_model_catalog"]
