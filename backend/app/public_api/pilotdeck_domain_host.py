@@ -15,7 +15,7 @@ from uuid import uuid4
 import httpx
 
 from app.core.turn_planner import TurnPlanner
-from app.llm.client import _prepare_user_input, _request_messages, _with_json_mode_instruction
+from app.llm.client import LLMClient, LLMError, _prepare_user_input, _request_messages, _with_json_mode_instruction
 from app.llm.stage_protocol import unified_system_prompt
 from app.session.session_schema import TurnPlan
 
@@ -85,8 +85,18 @@ class PilotDeckDomainHostClient:
             if not isinstance(provider, str) or not isinstance(model, str) \
                     or model_id != f"{provider}/{model}" or selected.get("available", selected.get("enabled")) is not True:
                 raise RuntimeError("PUBLIC_HOST_MODEL_SELECTION_INVALID")
-            class BoundModel:
-                def generate_json(self, system_prompt: str, user_payload: dict[str, Any]) -> Any:
+            class BoundModel(LLMClient):
+                # Reuse the owner's JSON decoding/repair without constructing an
+                # SD model config, driver, or provider client.
+                def __init__(self) -> None:
+                    pass
+
+                def generate_text(self, system_prompt: str, user_payload: dict[str, Any],
+                                  cancellation=None, **kwargs) -> str:
+                    return self._generate_json_candidate(system_prompt, user_payload, False, cancellation)
+
+                def _generate_json_candidate(self, system_prompt: str, user_payload: dict[str, Any],
+                                             json_mode_supported: bool, cancellation=None) -> str:
                     context_messages, serialized = _prepare_user_input(user_payload)
                     original_messages = _with_json_mode_instruction(
                         _request_messages(system_prompt, context_messages, serialized))
@@ -127,15 +137,12 @@ class PilotDeckDomainHostClient:
                             raise RuntimeError("PUBLIC_HOST_MODEL_FAILED")
                     if not finished or not fragments:
                         raise RuntimeError("PUBLIC_HOST_MODEL_INCOMPLETE")
-                    try:
-                        return json.loads("".join(fragments))
-                    except ValueError as exc:
-                        raise RuntimeError("PUBLIC_HOST_SOP_PLAN_INVALID") from exc
+                    return "".join(fragments)
 
             self_outer = self
             try:
                 plan = planner._generate_validated_plan(BoundModel(), unified_system_prompt(), payload)
-            except (ValueError, TypeError) as exc:
+            except (LLMError, ValueError, TypeError) as exc:
                 raise RuntimeError("PUBLIC_HOST_SOP_PLAN_INVALID") from exc
         return planner.normalize_plan(plan, message, session, routing_skills, [], "normal", None)
 

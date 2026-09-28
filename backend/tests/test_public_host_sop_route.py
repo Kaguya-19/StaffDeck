@@ -83,3 +83,54 @@ def test_runtime_binding_uses_existing_gateway_token_file(tmp_path):
                 gateway_url="http://user:pass@other.test", token_path=str(token_path), pilotdeck_user_id="pd-user")
     finally:
         host._bound_client = old
+
+
+@pytest.mark.parametrize('outputs,repair_key', [
+    (['```json\n{"decision":"answer_only"}\n```'], None),
+    (['not JSON', '{"decision":"answer_only"}'], '_json_repair'),
+    (['{"decision":"invalid"}', '{"decision":"answer_only"}'], '_schema_repair'),
+])
+def test_pd_host_route_preserves_owner_json_and_schema_repair(monkeypatch, outputs, repair_key):
+    from app.core.turn_planner import TurnPlanner
+    calls = []
+    def handle(request):
+        body = json.loads(request.content)
+        assert request.headers['authorization'] == 'Bearer bridge'
+        if body['operation'] == 'list_model_catalog':
+            return httpx.Response(200, json={'data': [
+                {'id': 'p/m', 'provider': 'p', 'model': 'm', 'available': True, 'is_default': True}]})
+        assert body['operation'] == 'model_stream'
+        assert body['input']['modelId'] == 'p/m'
+        calls.append(body['input']['request'])
+        output = outputs[len(calls) - 1]
+        return httpx.Response(200, headers={'content-type': 'application/x-ndjson'}, text=
+            json.dumps({'type': 'text_delta', 'text': output}) + '\n' +
+            json.dumps({'type': 'message_end', 'finishReason': 'stop'}) + '\n')
+    monkeypatch.setattr(TurnPlanner, 'prepare_payload', lambda *args, **kwargs: {'message': 'buy'})
+    monkeypatch.setattr(TurnPlanner, 'normalize_plan', lambda self, plan, *args: plan)
+    client = PilotDeckDomainHostClient('http://pd', 'bridge', 'pd-user', httpx.MockTransport(handle))
+    plan = client.plan_sop_route(tenant_id='tenant', actor_user_id='actor', agent_id='target',
+        message='buy', session=SimpleNamespace(), routing_skills=[], conversation_context=None)
+    assert plan.decision == 'answer_only'
+    assert len(calls) == len(outputs)
+    if repair_key:
+        assert repair_key in calls[1]['messages'][-1]['content'][0]['text']
+
+
+def test_pd_host_stream_error_is_not_repaired_or_retried(monkeypatch):
+    from app.core.turn_planner import TurnPlanner
+    calls = []
+    def handle(request):
+        body = json.loads(request.content)
+        calls.append(body['operation'])
+        if body['operation'] == 'list_model_catalog':
+            return httpx.Response(200, json={'data': [
+                {'id': 'p/m', 'provider': 'p', 'model': 'm', 'available': True, 'is_default': True}]})
+        return httpx.Response(200, headers={'content-type': 'application/x-ndjson'},
+            text='{"type":"error","error":{"code":"provider_error","status":400}}\n')
+    monkeypatch.setattr(TurnPlanner, 'prepare_payload', lambda *args, **kwargs: {})
+    client = PilotDeckDomainHostClient('http://pd', 'bridge', 'pd-user', httpx.MockTransport(handle))
+    with pytest.raises(RuntimeError, match='^PUBLIC_HOST_MODEL_FAILED$'):
+        client.plan_sop_route(tenant_id='tenant', actor_user_id='actor', agent_id='target',
+            message='buy', session=SimpleNamespace(), routing_skills=[], conversation_context=None)
+    assert calls == ['list_model_catalog', 'model_stream']
