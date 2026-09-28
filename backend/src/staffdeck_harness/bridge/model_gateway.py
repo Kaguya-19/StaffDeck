@@ -228,7 +228,9 @@ class ModelGateway:
         return StreamingResponse(body_iter(), media_type="text/event-stream", headers={"cache-control": "no-cache", "x-accel-buffering": "no"})
 
     async def _pilotdeck_completion(self, act: Any, selection: Any, body: dict[str, Any]):
-        from app.public_api.pilotdeck_harness_model import stream_model_events
+        from app.public_api.pilotdeck_harness_model import (
+            PublicModelPortError, prepare_model_request, stream_model_events,
+        )
         from staffdeck_harness.bridge.pilotdeck_model_wire import (
             UnsupportedModelWire, canonical_request, openai_chunks,
         )
@@ -259,7 +261,21 @@ class ModelGateway:
         if trace:
             trace("llm_call_started", dict(span))
         loop = __import__("asyncio").get_running_loop()
-        chunks = openai_chunks(stream_model_events(selection, canonical), selection)
+        bound_host = act.host
+        cancelled = lambda: self.registry.get(act.token) is not act or act.host is not bound_host
+        try:
+            prepared = await loop.run_in_executor(
+                None, lambda: prepare_model_request(selection, canonical, cancelled=cancelled),
+            )
+        except Exception as exc:  # noqa: BLE001 - public Port 400/503 or fenced turn
+            act.host.model_error = str(exc)
+            if trace:
+                trace("llm_call_failed", {**span, "duration_ms": _ms(started), "error": str(exc)})
+            if isinstance(exc, PublicModelPortError):
+                return _error(exc.status, exc.code, str(exc))
+            return _error(502, "PUBLIC_HOST_MODEL_PREPARE_INVALID", str(exc))
+        chunks = openai_chunks(stream_model_events(selection, canonical,
+                               cancelled=cancelled, prepared_input=prepared), selection)
 
         if not body.get("stream", True):
             try:
@@ -293,6 +309,8 @@ class ModelGateway:
                 act.host.model_error = str(exc)
                 if trace:
                     trace("llm_call_failed", {**span, "duration_ms": _ms(started), "error": str(exc)})
+                if isinstance(exc, PublicModelPortError):
+                    return _error(exc.status, exc.code, str(exc))
                 return _error(502, "PUBLIC_HOST_MODEL_FAILED", str(exc))
 
         async def body_iter() -> AsyncIterator[bytes]:
@@ -309,7 +327,8 @@ class ModelGateway:
                 act.host.model_error = str(exc)
                 if trace:
                     trace("llm_call_failed", {**span, "duration_ms": _ms(started), "error": str(exc)})
-                yield f"data: {json.dumps({'error': {'code': 'PUBLIC_HOST_MODEL_FAILED', 'message': str(exc)}})}\n\n".encode()
+                code = exc.code if isinstance(exc, PublicModelPortError) else "PUBLIC_HOST_MODEL_FAILED"
+                yield f"data: {json.dumps({'error': {'code': code, 'message': str(exc)}})}\n\n".encode()
 
         return StreamingResponse(body_iter(), media_type="text/event-stream",
                                  headers={"cache-control": "no-cache", "x-accel-buffering": "no"})

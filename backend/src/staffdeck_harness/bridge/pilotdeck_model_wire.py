@@ -146,7 +146,7 @@ def openai_chunks(events, selection: Any):
                                           "function": {"arguments": complete}}]}
         elif kind == "message_end":
             reason = event.get("finishReason")
-            if reason not in ("stop", "length", "tool_call", "content_filter"):
+            if reason not in ("stop", "tool_call"):
                 raise RuntimeError("PUBLIC_HOST_MODEL_INCOMPLETE")
             finished = True
             yield {"id": "pd-host", "object": "chat.completion.chunk", "model": selection.model,
