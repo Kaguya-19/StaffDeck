@@ -1,3 +1,4 @@
+import type { ReactNode } from 'react';
 import { ConfirmDialog } from '@/components/ConfirmDialog';
 import EmployeeAvatar from '@/components/EmployeeAvatar';
 import { Button } from '@/components/ui/button';
@@ -36,7 +37,7 @@ import {
 import type { UseChatSession } from '../useChatSession';
 import ModelSetupDialog from './ModelSetupDialog';
 
-export default function ChatDialogs({ chat }: { chat: UseChatSession }) {
+export default function ChatDialogs({ chat, pilotDeckApprovalInbox }: { chat: UseChatSession; pilotDeckApprovalInbox?: ReactNode }) {
   const {
     showHandoffInbox,
     setShowHandoffInbox,
@@ -135,6 +136,7 @@ export default function ChatDialogs({ chat }: { chat: UseChatSession }) {
               })}
             </div>
           )}
+          {pilotDeckApprovalInbox}
         </DialogContent>
       </Dialog>
 
