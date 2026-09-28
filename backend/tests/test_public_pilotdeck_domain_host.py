@@ -60,3 +60,26 @@ def test_public_ingest_rejects_missing_identity_and_host_failure():
     with pytest.raises(RuntimeError, match="PUBLIC_HOST_FILE_PARSE_FAILED: 415"):
         client.file_parse(tenant_id="tenant", actor_user_id="actor", agent_id="target",
                           filename="fact.pdf", content_base64="aGVsbG8=", media_type="application/pdf")
+
+
+def test_public_knowledge_retrieval_does_not_use_sd_default_model(monkeypatch):
+    from app.api import knowledge as native_knowledge
+    from app.knowledge.public_host_selection import use_public_host_retrieval
+    sentinel = object()
+    monkeypatch.setattr(native_knowledge, "_get_default_model", lambda db, tenant: sentinel)
+    assert native_knowledge._get_request_model(None, "tenant") is sentinel
+    with use_public_host_retrieval():
+        assert native_knowledge._get_request_model(None, "tenant") is None
+        with pytest.raises(Exception):
+            native_knowledge._get_request_model(None, "tenant", "sd-model")
+    assert native_knowledge._get_request_model(None, "tenant") is sentinel
+
+
+def test_public_ingest_never_reads_sd_model_selection():
+    from app.knowledge.service import KnowledgeService
+    class NoDatabase:
+        def exec(self, *args):
+            pytest.fail("PD public ingest must not query SD model catalog")
+    service = KnowledgeService(NoDatabase())
+    service._public_host_ingest = True
+    assert service._default_model_config("tenant") is None

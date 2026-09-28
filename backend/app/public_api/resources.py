@@ -122,14 +122,16 @@ def search_knowledge_base(
     db: Session = Depends(get_session),
 ) -> dict:
     enforce_public_knowledge_pep(db, principal, agent_id, knowledge_base_id=knowledge_base_id)
-    reject_public_scope_override(body, "tenant_id", "agent_id", "knowledge_base_ids")
+    reject_public_scope_override(body, "tenant_id", "agent_id", "knowledge_base_ids", "model_config_id")
     request = KnowledgeSearchRequest(
         tenant_id=principal.tenant_id,
         agent_id=agent_id,
         knowledge_base_ids=[knowledge_base_id],
         **body,
     )
-    result = internal_knowledge.search_knowledge(request, db, principal.actor_user)
+    from app.knowledge.public_host_selection import use_public_host_retrieval
+    with use_public_host_retrieval():
+        result = internal_knowledge.search_knowledge(request, db, principal.actor_user)
     payload = _dump(result)
     payload["citations"] = payload.get("okf_citations") or payload.get("evidence_pack") or []
     return payload

@@ -239,6 +239,7 @@ def extract_ingest_text(job: KnowledgeIngestJob, metadata: dict[str, Any], conte
 class KnowledgeService:
     def __init__(self, db: Session):
         self.db = db
+        self._public_host_ingest = False
 
     def create_ingest_job(self, payload: IngestPayload) -> KnowledgeIngestJob:
         job = KnowledgeIngestJob(
@@ -442,6 +443,7 @@ class KnowledgeService:
                 detail="正在识别文件格式并抽取正文",
             )
             metadata = job.metadata_json or {}
+            self._public_host_ingest = (metadata.get("metadata") or {}).get("_pilotdeck_host") is not None
             content = base64.b64decode(str(metadata.get("content_base64") or ""))
             text, file_type = extract_ingest_text(job, metadata, content)
             self._raise_if_ingest_cancelled(job)
@@ -1410,6 +1412,8 @@ class KnowledgeService:
         return {"status": "created", "skill_id": row.id}
 
     def _default_model_config(self, tenant_id: str) -> ModelConfig | None:
+        if self._public_host_ingest:
+            return None
         row = self.db.exec(
             select(ModelConfig).where(
                 ModelConfig.tenant_id == tenant_id,

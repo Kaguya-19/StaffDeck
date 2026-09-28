@@ -735,6 +735,11 @@ def _get_default_model(db: Session, tenant_id: str) -> ModelConfig | None:
 def _get_request_model(
     db: Session, tenant_id: str, model_config_id: str | None = None
 ) -> ModelConfig | None:
+    from app.knowledge.public_host_selection import public_host_retrieval_selected
+    if public_host_retrieval_selected():
+        if model_config_id:
+            raise HTTPException(status_code=400, detail="Public host retrieval cannot select an SD model")
+        return None
     if not model_config_id:
         return _get_default_model(db, tenant_id)
     model_config = db.get(ModelConfig, model_config_id)
