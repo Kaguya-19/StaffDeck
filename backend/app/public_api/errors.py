@@ -5,6 +5,7 @@ from typing import Any
 from fastapi import HTTPException, Request
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
+from fastapi.encoders import jsonable_encoder
 
 
 class PublicAPIError(Exception):
@@ -47,7 +48,7 @@ def problem_response(
         payload["errors"] = errors
     response_headers = {"X-Request-ID": request_id, **(headers or {})}
     return JSONResponse(
-        payload,
+        jsonable_encoder(payload, custom_encoder={ValueError: str}),
         status_code=status_code,
         media_type="application/problem+json",
         headers=response_headers,
