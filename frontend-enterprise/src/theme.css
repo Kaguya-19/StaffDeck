@@ -1,0 +1,30 @@
+html.dark {
+  --background: #12151c; --foreground: #edf0f7;
+  --surface: #1d2230; --surface-raised: #252b3a; --surface-muted: #2b3243; --surface-subtle: #181d28;
+  --border: #3a4255; --border-strong: #576176; --line: #343c4e;
+  --muted: #2b3243; --muted-soft: #adb6c9; --muted-foreground: #adb6c9; --ink-soft: #d1d8e6;
+  --card: #1d2230; --card-foreground: #edf0f7; --popover: #252b3a; --popover-foreground: #edf0f7;
+  --primary: #8eb8ff; --primary-foreground: #12151c; --secondary: #2b3243; --secondary-foreground: #edf0f7;
+  --accent: #343e54; --accent-foreground: #edf0f7; --accent-soft: #2b3243; --input: #3a4255; --ring: #8eb8ff;
+  --sidebar: #181d28; --sidebar-foreground: #adb6c9; --sidebar-primary: #edf0f7; --sidebar-primary-foreground: #181d28;
+  --sidebar-accent: #2b3243; --sidebar-accent-foreground: #edf0f7; --sidebar-border: #343c4e; --sidebar-ring: #8eb8ff;
+  --page-gradient-top: #12151c; --page-gradient-bottom: #12151c; --panel-bg: #1d2230;
+  --code-bg: #181d28; --code-fg: #edf0f7; --code-border: #3a4255;
+  --code-sidebar-bg: #252b3a; --code-sidebar-active: #343e54; --code-tab-bg: #252b3a;
+}
+html.dark body, html.dark .app-shell, html.dark .content { background: var(--background); color: var(--foreground); }
+html.dark .sidebar { background: var(--sidebar) !important; border-color: var(--border); }
+/* Map legacy light neutral business surfaces to the selected theme. */
+html.dark :is([class~="bg-white"], [class~="bg-[#ffffff]"], [class~="bg-[#FFFFFF]"],
+  [class~="bg-[#fcfcfc]"], [class~="bg-[#FCFCFC]"], [class~="bg-[#fafafa]"],
+  .data-card, .editor-card, .conversation-log-card, .ui-card) { background-color: var(--surface) !important; }
+html.dark :is([class~="bg-[#f6f6f6]"], [class~="bg-[#F6F6F6]"], [class~="bg-[#f2f3f7]"],
+  [class~="bg-[#f7f8fa]"], [class~="bg-[#f3f4f6]"], [class~="bg-[#eef1fb]"], [class~="bg-[#f8f8f9]"]) { background-color: var(--surface-muted) !important; }
+html.dark :is([class~="text-[#18181a]"], [class~="text-[#18181A]"], [class~="text-[#111111]"],
+  [class~="text-[#464c5e]"], [class~="text-[#464C5E]"], [class~="text-black"]) { color: var(--foreground) !important; }
+html.dark :is([class~="text-[#757f9c]"], [class~="text-[#757F9C]"], [class~="text-[#858b9c]"],
+  [class~="text-[#a0a8bd]"], [class~="text-[#8a9694]"]) { color: var(--muted-foreground) !important; }
+html.dark :is([class~="border-[#e3e7f1]"], [class~="border-[#eceef1]"], [class~="border-[#e5e7eb]"]) { border-color: var(--border) !important; }
+html.dark :is(input, textarea, select) { background-color: var(--surface); color: var(--foreground); caret-color: var(--foreground); }
+html.dark textarea { -webkit-text-fill-color: var(--foreground); }
+html.dark :is(input, textarea)::placeholder { color: var(--muted-foreground); }

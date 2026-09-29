@@ -21,6 +21,7 @@ import {
   type EnterpriseAuthUser,
 } from '../auth';
 import LanguageSwitcher from './LanguageSwitcher';
+import ThemeSwitcher from './ThemeSwitcher';
 import AccountApiKeyDialog from './AccountApiKeyDialog';
 import { APP_BASE, appPath } from '@/lib/app-path';
 
@@ -229,6 +230,7 @@ export default function AppHeader({
       <div className="min-w-0 flex-1">{leftContent}</div>
       <div className="flex h-[32px] shrink-0 items-center gap-[8px]">
         <LanguageSwitcher />
+        <ThemeSwitcher />
         {right !== undefined ? right : (
           <DropdownMenu>
             <DropdownMenuTrigger

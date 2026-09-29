@@ -3990,5 +3990,7 @@
   "正在加载审批": "Loading approval",
   "当前会话没有待处理的人工审批": "No human approval is pending for this session",
   "固定版本": "Pinned Version",
-  "人工回复": "Human Reply"
+  "人工回复": "Human Reply",
+  "切换到浅色主题": "Switch to light theme",
+  "切换到深色主题": "Switch to dark theme"
 }

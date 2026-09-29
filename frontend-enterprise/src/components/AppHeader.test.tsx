@@ -60,3 +60,20 @@ describe('AppHeader', () => {
     expect(screen.getByText('普通成员')).toBeTruthy();
   });
 });
+
+
+it('switches the normal header theme and restores the saved choice', async () => {
+  const { initializeTheme } = await import('./ThemeSwitcher');
+  window.localStorage.removeItem('staffdeck_theme');
+  initializeTheme();
+  render(createElement(I18nProvider, null, createElement(AppHeader, { title: 'Knowledge' })));
+  const user = userEvent.setup();
+  await user.click(screen.getByRole('button', { name: '切换到深色主题' }));
+  expect(document.documentElement.classList.contains('dark')).toBe(true);
+  expect(window.localStorage.getItem('staffdeck_theme')).toBe('dark');
+  document.documentElement.classList.remove('dark');
+  initializeTheme();
+  expect(document.documentElement.classList.contains('dark')).toBe(true);
+  await user.click(screen.getByRole('button', { name: '切换到浅色主题' }));
+  expect(document.documentElement.classList.contains('dark')).toBe(false);
+});
