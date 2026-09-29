@@ -22,7 +22,7 @@ import {
   type StreamEvent,
 } from '@/api/client';
 import { clearEnterpriseAuthSession, getEnterpriseAuthSession } from '@/auth';
-import { loadModelCatalog } from '@/api/model-catalog';
+import { loadModelCatalog, type ChatModelChoice } from '@/api/model-catalog';
 import {
   emitAgentScopeChange,
   isTeamScope,
@@ -339,7 +339,7 @@ export function useChatSession(options: UseChatSessionOptions = {}) {
     || window.localStorage.getItem(SELECTED_AGENT_STORAGE_KEY)
     || 'all'
   ));
-  const [modelConfigs, setModelConfigs] = useState<ModelConfigRead[]>([]);
+  const [modelConfigs, setModelConfigs] = useState<ChatModelChoice[]>([]);
   const [selectedModelConfigId, setSelectedModelConfigId] = useState(
     () => window.localStorage.getItem(modelStorageKey(tenantId)) || '',
   );
@@ -635,12 +635,9 @@ export function useChatSession(options: UseChatSessionOptions = {}) {
   }, [tenantId]);
 
   const completeModelSetup = useCallback((model: ModelConfigRead) => {
-    const next = [...modelConfigs.filter((item) => item.id !== model.id), model];
-    setModelConfigs(next);
-    window.dispatchEvent(new CustomEvent(MODEL_CONFIGS_UPDATED_EVENT, { detail: { models: next } }));
+    window.dispatchEvent(new CustomEvent(MODEL_CONFIGS_UPDATED_EVENT, { detail: { models: [model] } }));
     setModelConfigsLoadError('');
-    changeModelConfig(model.id);
-  }, [changeModelConfig, modelConfigs]);
+  }, []);
 
   const invalidateModelSelection = useCallback((modelId?: string) => {
     if (modelId) {
@@ -854,25 +851,9 @@ export function useChatSession(options: UseChatSessionOptions = {}) {
     const onModelConfigsUpdated = (event: Event) => {
       const rows = (event as CustomEvent<{ models?: ModelConfigRead[] }>).detail?.models;
       if (!Array.isArray(rows) || rows.some((row) => row.tenant_id !== tenantId)) return;
-      if (modelCatalogRequest.current) {
-        modelCatalogRequest.current.valid = false;
-        modelCatalogRequest.current.controller.abort();
-        modelCatalogRequest.current = null;
-      }
-      setModelConfigs(rows);
-      setModelConfigsLoadError('');
-      setModelConfigsLoading(false);
-      setSelectedModelConfigId((current) => {
-        const enabledRows = rows.filter((item) => item.enabled);
-        if (current && enabledRows.some((item) => item.id === current)) return current;
-        const next = enabledRows.find((item) => item.is_default)?.id || enabledRows[0]?.id || '';
-        if (next) {
-          window.localStorage.setItem(modelStorageKey(tenantId), next);
-        } else {
-          window.localStorage.removeItem(modelStorageKey(tenantId));
-        }
-        return next;
-      });
+      // Management events invalidate the chat catalog; they cannot substitute
+      // native ModelConfig IDs for a selected public host model.
+      setModelConfigsRevision(revision => revision + 1);
     };
     window.addEventListener(MODEL_CONFIGS_UPDATED_EVENT, onModelConfigsUpdated);
     return () => window.removeEventListener(MODEL_CONFIGS_UPDATED_EVENT, onModelConfigsUpdated);

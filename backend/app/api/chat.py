@@ -96,6 +96,38 @@ from app.teams.service import get_team_leader
 from app.teams.wakeup import build_tl_chat_context, process_tl_reply
 
 router = APIRouter(prefix="/api/chat", tags=["chat"])
+
+@router.get("/models", response_model=list[dict])
+def list_chat_models(tenant_id: str = Query(...), db: Session = Depends(get_session),
+                     current_user: User = Depends(get_current_user)) -> list[dict]:
+    """Project the actual chat owner catalog, keeping native management IDs separate."""
+    import os
+    if tenant_id != current_user.tenant_id:
+        raise HTTPException(status_code=403, detail="Tenant access denied.")
+    if os.environ.get("PILOTDECK_DOMAIN_HOST_ENABLED", "false").lower() not in {"true", "1"}:
+        from app.api.model_configs import list_model_configs
+        return [row.model_dump(mode="json") for row in list_model_configs(tenant_id, db)]
+    from types import SimpleNamespace
+    from app.public_api.pilotdeck_domain_host import require_pilotdeck_domain_host
+    from app.public_api.pilotdeck_domain_binding import FixedPilotDeckDomainHostClient
+    from app.public_api.pilotdeck_harness_model import select_harness_model, PublicModelPortError
+    try:
+        host = require_pilotdeck_domain_host()
+        if not isinstance(host, FixedPilotDeckDomainHostClient) or (
+            current_user.tenant_id, current_user.id
+        ) != (host.tenant_id, host.actor_user_id):
+            raise HTTPException(status_code=403, detail="PUBLIC_HOST_FIXED_IDENTITY_MISMATCH")
+        selection = select_harness_model(SimpleNamespace(tenant_id=current_user.tenant_id,
+            user_id=current_user.id, staff_id=host.agent_id))
+        return [{"id": selection.id, "tenant_id": current_user.tenant_id,
+                 "name": selection.model, "provider": selection.provider, "model": selection.model,
+                 "is_default": True, "enabled": True, "source": "pilotdeck"}]
+    except PublicModelPortError as error:
+        raise HTTPException(status_code=error.status, detail=error.code) from None
+    except RuntimeError:
+        # Missing/ambiguous host selection must not fall back to a local SD model.
+        raise HTTPException(status_code=503, detail="PUBLIC_HOST_MODEL_CATALOG_UNAVAILABLE") from None
+
 logger = logging.getLogger(__name__)
 CANCELLED_ASSISTANT_REPLY = "已停止生成"
 INTERRUPTED_ASSISTANT_REPLY = "本次响应中断，请重试发送。"

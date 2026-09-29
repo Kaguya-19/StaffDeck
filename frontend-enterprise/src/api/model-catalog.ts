@@ -1,10 +1,12 @@
 import { api, isAuthError } from './client';
 import type { ModelConfigRead } from '../types';
 
+export type ChatModelChoice = Pick<ModelConfigRead, 'id' | 'tenant_id' | 'name' | 'provider' | 'model' | 'is_default' | 'enabled'> & { source?: 'pilotdeck' };
+
 export const MODEL_CATALOG_TIMEOUT_MS = 10000;
 
 /** A cold chat entry must settle even if fetch/body/auth refresh never resolves. */
-export async function loadModelCatalog(tenantId: string, signal: AbortSignal): Promise<ModelConfigRead[]> {
+export async function loadModelCatalog(tenantId: string, signal: AbortSignal): Promise<ChatModelChoice[]> {
   for (let attempt = 0; attempt < 2; attempt += 1) {
     if (signal.aborted) throw new DOMException('Aborted', 'AbortError');
     const controller = new AbortController();
@@ -12,7 +14,7 @@ export async function loadModelCatalog(tenantId: string, signal: AbortSignal): P
     let cancel = () => {};
     try {
       const rows = await Promise.race([
-        api.get<ModelConfigRead[]>(`/api/enterprise/model-configs?tenant_id=${encodeURIComponent(tenantId)}`, { signal: controller.signal }),
+        api.get<ChatModelChoice[]>(`/api/chat/models?tenant_id=${encodeURIComponent(tenantId)}`, { signal: controller.signal }),
         new Promise<never>((_, reject) => {
           cancel = () => { controller.abort(); reject(new DOMException('Aborted', 'AbortError')); };
           signal.addEventListener('abort', cancel, { once: true });
