@@ -13,7 +13,9 @@ from app.api import knowledge_bases as internal_knowledge_bases
 from app.api import scheduled_tasks as internal_scheduled_tasks
 from app.api import tools as internal_tools
 from app.db import get_session
-from app.db.models import APIJob, AgentResourceBinding, KnowledgeIngestJob, Tool, utc_now
+from app.db.models import (
+    APIJob, AgentResourceBinding, KnowledgeDocument, KnowledgeIngestJob, Tool, utc_now,
+)
 from app.general_skills.schema import GeneralSkillImportRequest, GeneralSkillRunRequest
 from app.knowledge.schema import (
     KnowledgeBaseCreateRequest,
@@ -187,7 +189,7 @@ async def upload_knowledge_document(
     db: Session = Depends(get_session),
 ) -> dict:
     enforce_public_knowledge_pep(db, principal, agent_id, write=True, knowledge_base_id=knowledge_base_id)
-    content = await file.read()
+    content = await file.read(20 * 1024 * 1024 + 1)
     if len(content) > 20 * 1024 * 1024:
         raise PublicAPIError(413, "DOCUMENT_TOO_LARGE", "Documents are limited to 20 MB.")
     job = create_job(
@@ -271,8 +273,37 @@ def update_knowledge_document(
 ) -> dict:
     enforce_public_knowledge_pep(db, principal, agent_id, write=True, knowledge_base_id=knowledge_base_id, document_id=document_id)
     reject_public_scope_override(body, "tenant_id", "agent_id", "knowledge_base_id", "document_id")
+    # The URL's base and employee must own the document version being edited.
+    # Internal update_document otherwise defaults to the open-gallery scope.
+    version = internal_knowledge_bases._visible_knowledge_version(
+        db, principal.tenant_id, knowledge_base_id, agent_id
+    )
+    document = db.get(KnowledgeDocument, document_id)
+    if (
+        not document
+        or document.tenant_id != principal.tenant_id
+        or document.knowledge_base_id != knowledge_base_id
+    ):
+        raise PublicAPIError(404, "KNOWLEDGE_DOCUMENT_NOT_FOUND", "Knowledge document not found.")
+    if document.knowledge_base_version_id != version.id:
+        # Updates clone documents into a new head, leaving the old ID/timestamp
+        # intact. Recognize a stale read only within this employee's visible
+        # version history; another employee's private version remains a 404.
+        history = internal_knowledge_bases.list_knowledge_base_versions(
+            knowledge_base_id, principal.tenant_id, agent_id, db
+        )
+        if not any(item["id"] == document.knowledge_base_version_id for item in history):
+            raise PublicAPIError(
+                404, "KNOWLEDGE_DOCUMENT_NOT_FOUND", "Knowledge document not found."
+            )
+        raise PublicAPIError(
+            409, "KNOWLEDGE_DOCUMENT_CONFLICT",
+            "The knowledge base version has changed. Reload documents before editing.",
+        )
     request = KnowledgeDocumentUpdateRequest(tenant_id=principal.tenant_id, **body)
-    return _dump(internal_knowledge.update_document(document_id, request, db, principal.actor_user, agent_id))
+    return _dump(internal_knowledge.update_document(
+        document_id, request, db, principal.actor_user, agent_id=agent_id
+    ))
 
 
 @router.post("/agents/{agent_id}/knowledge-bases/{knowledge_base_id}/documents/{document_id}:archive", response_model=dict)
