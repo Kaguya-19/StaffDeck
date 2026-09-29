@@ -4,6 +4,7 @@ from fastapi import HTTPException
 from pydantic import ValidationError
 
 from app.public_api.pilotdeck_approvals import ApprovalReply, PilotDeckApprovalClient
+from app.public_api.errors import PublicAPIError, public_api_error_handler
 
 
 def test_bridge_preserves_original_reply_and_separates_service_and_user_identity():
@@ -21,9 +22,43 @@ def test_bridge_preserves_original_reply_and_separates_service_and_user_identity
 def test_bridge_preserves_owner_denial():
     client = PilotDeckApprovalClient("http://localhost:16411", "service", "tenant", "target",
                                     httpx.MockTransport(lambda request: httpx.Response(403, json={"code": "SOP_APPROVAL_FORBIDDEN"})))
-    with pytest.raises(HTTPException) as error:
+    with pytest.raises(PublicAPIError) as error:
         client.call("status", {}, "Bearer approver")
     assert error.value.status_code == 403
+    assert error.value.code == "SOP_APPROVAL_FORBIDDEN"
+
+
+@pytest.mark.parametrize("change", ["message", "expected_revision"])
+def test_public_reply_preserves_original_receipt_conflict(change, native_consumer):
+    client, db, user, headers, calls = native_consumer
+    original = None
+    def owner(request):
+        nonlocal original
+        payload = request.read()
+        if original is None:
+            original = payload
+            return httpx.Response(200, json={"accepted": True, "duplicate": False, "revision": 8})
+        if payload == original:
+            return httpx.Response(200, json={"accepted": True, "duplicate": True, "revision": 8})
+        return httpx.Response(409, json={"code": "SOP_RESUME_REQUEST_CONFLICT"})
+    def transport(request):
+        calls.append(request)
+        return owner(request)
+    client.app.state.pilotdeck_approval_client = PilotDeckApprovalClient(
+        "http://localhost:16411", "service", "tenant", "target", httpx.MockTransport(transport))
+    body = dict(session_key="session", request_id="original-request", wait_id="original",
+                expected_revision=7, message="Reviewed")
+    first = client.post("/pilotdeck/approvals/reply", headers=headers, json=body)
+    assert first.status_code == 200 and first.json()["duplicate"] is False
+    changed = {**body, change: "Changed" if change == "message" else 9}
+    for _ in range(2):
+        response = client.post("/pilotdeck/approvals/reply", headers=headers, json=changed)
+        assert response.status_code == 409
+        assert response.json()["code"] == "SOP_RESUME_REQUEST_CONFLICT"
+        assert response.json()["status"] == 409
+    replay = client.post("/pilotdeck/approvals/reply", headers=headers, json=body)
+    assert replay.status_code == 200 and replay.json()["duplicate"] is True
+    assert len(calls) == 4
 
 
 def test_browser_cannot_supply_subject_or_assignee():
@@ -80,6 +115,7 @@ def native_consumer(monkeypatch):
             calls.append(request)
             return httpx.Response(200, json={"accepted": True, "duplicate": True, "revision": 8})
         app = FastAPI()
+        app.add_exception_handler(PublicAPIError, public_api_error_handler)
         app.include_router(router)
         app.state.pilotdeck_approval_client = PilotDeckApprovalClient(
             "http://localhost:16411", "service", "tenant", "target", httpx.MockTransport(handle))

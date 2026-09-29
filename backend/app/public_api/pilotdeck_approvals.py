@@ -12,6 +12,7 @@ from sqlmodel import Session
 from app.db import get_session
 from app.db.models import User
 from app.security.auth import get_current_user
+from app.public_api.errors import PublicAPIError
 
 router = APIRouter(prefix="/pilotdeck/approvals", tags=["pilotdeck-approvals"])
 
@@ -57,6 +58,8 @@ class PilotDeckApprovalClient:
                 detail = response.json()
             except ValueError:
                 detail = response.text
+            if isinstance(detail, dict) and isinstance(detail.get("code"), str) and detail["code"]:
+                raise PublicAPIError(response.status_code, detail["code"], detail.get("message") or detail["code"])
             raise HTTPException(response.status_code, detail=detail)
         value = response.json()
         if not isinstance(value, dict):
