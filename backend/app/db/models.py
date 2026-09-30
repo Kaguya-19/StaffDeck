@@ -9,7 +9,7 @@ from sqlmodel import Field, SQLModel
 
 
 def utc_now() -> datetime:
-    return datetime.now(UTC).replace(tzinfo=None)
+    return datetime.now(UTC)
 
 
 def new_id(prefix: str) -> str:
@@ -37,6 +37,7 @@ class User(SQLModel, table=True):
     username: str = Field(index=True)
     display_name: Optional[str] = None
     role: str = Field(default="member", index=True)
+    disabled: bool = Field(default=False, index=True)
     # 账号来源:web=网页端创建;wechat 等=渠道懒建(用户管理列表默认隐藏)
     source: str = Field(default="web", index=True)
     password_hash: str

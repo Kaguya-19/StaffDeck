@@ -59,6 +59,7 @@ def get_current_user(
     control = provider()
     if control is not None:
         user = project_subject(db, control.current(credentials.credentials))
+        _ensure_user_enabled(user)
         db.info["staffdeck_actor_id"] = user.id
         from staffdeck_harness.runtime.services import bind_authenticated_session
         bind_authenticated_session(db)
@@ -67,6 +68,7 @@ def get_current_user(
     user = db.get(User, payload.get("user_id", ""))
     if not user or user.tenant_id != payload.get("tenant_id"):
         raise HTTPException(status_code=401, detail="Invalid user token")
+    _ensure_user_enabled(user)
     db.info["staffdeck_actor_id"] = user.id
     return user
 
@@ -76,6 +78,11 @@ def ensure_current_user_tenant(tenant_id: str, current_user: User) -> None:
         raise HTTPException(status_code=401, detail="Not authenticated")
     if tenant_id != current_user.tenant_id:
         raise HTTPException(status_code=403, detail="Tenant mismatch")
+
+
+def _ensure_user_enabled(user: User) -> None:
+    if getattr(user, "disabled", False):
+        raise HTTPException(status_code=403, detail={"code": "USER_DISABLED", "message": "User account is disabled"})
 
 
 def require_current_tenant(

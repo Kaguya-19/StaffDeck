@@ -47,6 +47,7 @@ class UserUpdateRequest(BaseModel):
     display_name: Optional[str] = None
     password: Optional[str] = None
     role: Optional[Literal["admin", "member"]] = None
+    disabled: Optional[bool] = None
 
 
 class UserChannelIdentity(BaseModel):
@@ -143,6 +144,8 @@ def login(request: LoginRequest, response: Response = None, http_request: Reques
             user = display_name_matches[0]
     if not user or not verify_password(request.password, user.password_hash):
         raise HTTPException(status_code=401, detail="Invalid username or password")
+    if user.disabled:
+        raise HTTPException(status_code=403, detail={"code": "USER_DISABLED", "message": "User account is disabled"})
 
     return LoginResponse(
         token=create_access_token(user),
@@ -515,6 +518,8 @@ def update_user(
         if user.id == current_user.id:
             raise HTTPException(status_code=400, detail="Cannot change your own account role")
         user.role = request.role
+    if request.disabled is not None:
+        user.disabled = request.disabled
     user.updated_at = utc_now()
     db.add(user)
     db.commit()
@@ -557,6 +562,7 @@ def _user_read(
         display_name=user.display_name,
         role=user.role,
         source=user.source,
+        disabled=user.disabled,
         avatar_url=avatar_url,
         created_at=user.created_at.isoformat() if user.created_at else None,
         updated_at=user.updated_at.isoformat() if user.updated_at else None,

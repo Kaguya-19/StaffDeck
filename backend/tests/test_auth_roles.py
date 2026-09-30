@@ -1,6 +1,8 @@
 from fastapi import HTTPException
+from fastapi.security import HTTPAuthorizationCredentials
 from sqlalchemy.pool import StaticPool
 from sqlmodel import Session, SQLModel, create_engine, select
+import pytest
 
 from app.api.auth import (
     LoginRequest,
@@ -12,6 +14,7 @@ from app.api.auth import (
 )
 from app.db.models import Tenant, User
 from app.security.auth import hash_password
+from app.security.auth import create_access_token, get_current_user
 
 
 def test_unknown_login_does_not_create_account() -> None:
@@ -154,6 +157,52 @@ def test_duplicate_display_name_cannot_be_used_to_login() -> None:
             assert error.detail == "Invalid username or password"
         else:
             raise AssertionError("an ambiguous display name must not authenticate any account")
+
+
+def test_admin_disable_blocks_login_and_existing_token_then_reenable_restores_access() -> None:
+    with _test_session() as db:
+        db.add(Tenant(id="tenant_demo", name="Demo"))
+        admin = User(id="admin", tenant_id="tenant_demo", username="admin", role="admin", password_hash=hash_password("admin"))
+        member = User(id="member", tenant_id="tenant_demo", username="member", role="member", password_hash=hash_password("secret"))
+        db.add(admin)
+        db.add(member)
+        db.commit()
+        old_token = create_access_token(member)
+
+        updated = update_user(member.id, UserUpdateRequest(tenant_id="tenant_demo", disabled=True), admin, db)
+        assert updated.disabled is True
+        with pytest.raises(HTTPException) as login_error:
+            login(LoginRequest(tenant_id="tenant_demo", username="member", password="secret"), db=db)
+        assert login_error.value.status_code == 403
+        assert login_error.value.detail["code"] == "USER_DISABLED"
+        with pytest.raises(HTTPException) as token_error:
+            get_current_user(HTTPAuthorizationCredentials(scheme="Bearer", credentials=old_token), db=db)
+        assert token_error.value.status_code == 403
+        assert token_error.value.detail["code"] == "USER_DISABLED"
+
+        update_user(member.id, UserUpdateRequest(tenant_id="tenant_demo", disabled=False), admin, db)
+        restored = login(LoginRequest(tenant_id="tenant_demo", username="member", password="secret"), db=db)
+        assert restored.user.disabled is False
+
+
+def test_only_same_tenant_admin_can_change_disabled_state() -> None:
+    with _test_session() as db:
+        db.add(Tenant(id="tenant_a", name="A"))
+        db.add(Tenant(id="tenant_b", name="B"))
+        admin_a = User(id="admin_a", tenant_id="tenant_a", username="admin", role="admin", password_hash=hash_password("secret"))
+        admin_b = User(id="admin_b", tenant_id="tenant_b", username="admin", role="admin", password_hash=hash_password("secret"))
+        member = User(id="member_a", tenant_id="tenant_a", username="member", role="member", password_hash=hash_password("secret"))
+        db.add(admin_a)
+        db.add(admin_b)
+        db.add(member)
+        db.commit()
+        with pytest.raises(HTTPException) as cross_tenant:
+            update_user(member.id, UserUpdateRequest(tenant_id="tenant_a", disabled=True), admin_b, db)
+        assert cross_tenant.value.status_code == 403
+        with pytest.raises(HTTPException) as ordinary:
+            update_user(member.id, UserUpdateRequest(tenant_id="tenant_a", disabled=True), member, db)
+        assert ordinary.value.status_code == 403
+        assert db.get(User, member.id).disabled is False
 
 
 def _test_session() -> Session:
