@@ -30,6 +30,7 @@ import {
   CHAT_GROUP_MESSAGE_LEADER_BADGE_CLASS,
   CHAT_GROUP_MESSAGE_ROW_CLASS,
   CHAT_GROUP_MESSAGE_SENDER_CLASS,
+  CHAT_INLINE_CITATION_CLASS,
   CHAT_MESSAGE_ITEM_CLASS,
   CHAT_MESSAGE_MODE_CHIP_CLASS,
   CHAT_PLAIN_ANSWER_CLASS,
@@ -124,6 +125,12 @@ export default function MessageBubble({ chat, item, render }: MessageBubbleProps
     ? employeeDisplayName(chat.displayedAgent)
     : '项目领导';
   const teamProgress = item.role === 'assistant' ? activeTeamProgress(item) : null;
+  const citationByNumber = new Map(
+    citations.flatMap((citation) => {
+      const match = String(citation.label || '').match(/^\[(\d+)\]$/);
+      return match ? [[Number(match[1]), citation] as const] : [];
+    }),
+  );
 
   return (
     <div className={cn(CHAT_MESSAGE_ITEM_CLASS, queuedMessage && CHAT_QUEUED_MESSAGE_ITEM_CLASS)}>
@@ -175,7 +182,24 @@ export default function MessageBubble({ chat, item, render }: MessageBubbleProps
           {!statusOnly && visibleContent ? (
             item.role === 'assistant' ? (
               <div aria-live={teamProgress ? 'polite' : undefined} data-i18n-ignore>
-                <MarkdownMessage content={visibleContent} />
+                <MarkdownMessage
+                  content={visibleContent}
+                  renderCitationMarker={({ number, key }) => {
+                    const citation = citationByNumber.get(number);
+                    if (!citation) return `[${number}]`;
+                    return (
+                      <button
+                        key={key}
+                        type="button"
+                        className={CHAT_INLINE_CITATION_CLASS}
+                        aria-label={`打开引用 [${number}]`}
+                        onClick={() => setActiveCitation(citation)}
+                      >
+                        [{number}]
+                      </button>
+                    );
+                  }}
+                />
                 {teamProgress && (
                   <div
                     role="status"

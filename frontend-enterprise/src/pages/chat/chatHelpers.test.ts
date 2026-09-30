@@ -179,6 +179,20 @@ describe('chat history consumer contract', () => {
     expect(rendered.match(/href=/g)).toHaveLength(2);
   });
 
+  it('delegates only known inline citation markers to the citation renderer', () => {
+    const rendered = renderToStaticMarkup(
+      createElement(MarkdownMessage, {
+        content: '依据[1]与未知[9]。',
+        renderCitationMarker: ({ number, key }) => number === 1
+          ? createElement('button', { key, type: 'button', 'data-citation': number }, `[${number}]`)
+          : `[${number}]`,
+      }),
+    );
+
+    expect(rendered).toContain('data-citation="1"');
+    expect(rendered).toContain('未知[9]');
+  });
+
   it('makes www links clickable by adding a safe HTTPS target', () => {
     const rendered = renderToStaticMarkup(
       createElement(

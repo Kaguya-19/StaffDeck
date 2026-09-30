@@ -193,6 +193,7 @@ function renderBareLinks(text: string, keyPrefix: string): ReactNode[] {
 
 export type MarkdownRenderOptions = {
   renderInternalLink?: (link: { label: string; href: string; key: string }) => ReactNode;
+  renderCitationMarker?: (marker: { number: number; key: string }) => ReactNode;
 };
 
 function safeExternalHttpUrl(value: string): string | null {
@@ -239,7 +240,7 @@ export function renderInlineMarkdown(
   options: MarkdownRenderOptions = {},
 ): ReactNode[] {
   const nodes: ReactNode[] = [];
-  const pattern = /(`[^`]*`|\*\*[^*]+?\*\*|!?\[[^\]\n]*\]\((?:[^()\n]|\([^()\n]*\))+\))/g;
+  const pattern = /(`[^`]*`|\*\*[^*]+?\*\*|!?\[[^\]\n]*\]\((?:[^()\n]|\([^()\n]*\))+\)|\[\d+\])/g;
   let cursor = 0;
   let index = 0;
   let match: RegExpExecArray | null;
@@ -254,6 +255,8 @@ export function renderInlineMarkdown(
       nodes.push(<code key={key}>{token.slice(1, -1)}</code>);
     } else if (token.startsWith('**') && token.endsWith('**')) {
       nodes.push(<strong key={key}>{renderInlineMarkdown(token.slice(2, -2), key, options)}</strong>);
+    } else if (/^\[\d+\]$/.test(token) && options.renderCitationMarker) {
+      nodes.push(options.renderCitationMarker({ number: Number(token.slice(1, -1)), key }));
     } else {
       const image = token.match(/^!\[([^\]]*)\]\(((?:[^()\n]|\([^()\n]*\))+)\)$/);
       if (image) {
@@ -604,11 +607,17 @@ export function renderMarkdownBlocks(
 export function MarkdownMessage({
   content,
   preserveLineBreaks = true,
+  renderCitationMarker,
 }: {
   content: string;
   preserveLineBreaks?: boolean;
+  renderCitationMarker?: MarkdownRenderOptions['renderCitationMarker'];
 }) {
-  return <div className={CHAT_MARKDOWN_CLASS}>{renderMarkdownBlocks(content, preserveLineBreaks)}</div>;
+  return (
+    <div className={CHAT_MARKDOWN_CLASS}>
+      {renderMarkdownBlocks(content, preserveLineBreaks, { renderCitationMarker })}
+    </div>
+  );
 }
 
 export function traceSummaryIconName(_summary: { state: TraceLine['state'] }): CotTraceIconName {

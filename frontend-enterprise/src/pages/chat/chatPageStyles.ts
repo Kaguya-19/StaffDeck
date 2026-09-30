@@ -153,6 +153,8 @@ export const CHAT_CITATION_LIST_CLASS = 'flex min-w-0 max-w-full flex-wrap gap-[
 export const CHAT_CITATION_CHIP_CLASS =
   'inline-flex min-w-0 max-w-full items-center gap-[6px] overflow-hidden rounded-[8px] border border-[#e3e7f1] bg-[#fafbfc] px-[9px] py-[5px] text-left text-[12px] text-[#464c5e] transition-colors hover:border-[#c9d2e4] hover:bg-white';
 export const CHAT_CITATION_INDEX_CLASS = 'shrink-0 font-semibold text-[#18181a]';
+export const CHAT_INLINE_CITATION_CLASS =
+  'inline-flex cursor-pointer items-center rounded-[4px] px-[2px] font-semibold text-[#1a71ff] underline decoration-dotted underline-offset-2 hover:bg-[#eef4ff]';
 export const CHAT_CITATION_TITLE_CLASS = 'min-w-0 truncate';
 
 // ---------------------------------------------------------------------------
