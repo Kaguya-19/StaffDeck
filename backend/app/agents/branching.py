@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from copy import deepcopy
+from datetime import UTC, datetime
 from typing import Any
 
 from sqlmodel import Session, select
@@ -362,6 +363,15 @@ def project_skill_with_branch(
     return projected
 
 
+def _datetime_sort_key(value: datetime | None) -> float:
+    """Compare persisted naive UTC values with timezone-aware UTC values safely."""
+    if value is None:
+        return float("-inf")
+    if value.tzinfo is None:
+        value = value.replace(tzinfo=UTC)
+    return value.astimezone(UTC).timestamp()
+
+
 def visible_skill_rows(
     db: Session,
     tenant_id: str,
@@ -413,7 +423,7 @@ def visible_skill_rows(
         if not include_inactive and branch.status != "active":
             continue
         rows.append(project_skill_with_branch(skill, branch, binding.status))
-    return sorted(rows, key=lambda item: item.updated_at, reverse=True)
+    return sorted(rows, key=lambda item: _datetime_sort_key(item.updated_at), reverse=True)
 
 
 def visible_published_skills(

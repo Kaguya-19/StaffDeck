@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from datetime import UTC, datetime
 import sqlite3
 
 import pytest
@@ -1295,6 +1296,52 @@ def test_inactive_bound_skill_can_be_reenabled_from_management_api() -> None:
         assert binding_after.status == "active"
         listed = visible_skill_rows(db, "tenant_demo", agent.id)
         assert next(row for row in listed if row.skill_id == skill.skill_id).status == "published"
+
+
+def test_publish_skill_handles_mixed_persisted_datetime_awareness() -> None:
+    with _test_session() as db:
+        db.add(Tenant(id="tenant_demo", name="Demo"))
+        db.add(AgentProfile(id="agent_overall", tenant_id="tenant_demo", name="整体智能体", is_overall=True))
+        agent = AgentProfile(id="agent_branch", tenant_id="tenant_demo", name="客服分支", is_overall=False)
+        target = Skill(
+            tenant_id="tenant_demo", skill_id="publish_target", version="1.0.0",
+            name="发布目标", business_domain="电商", description="发布目标",
+            status="published", content_json=_graph("发布目标", "1.0.0"),
+        )
+        existing = Skill(
+            tenant_id="tenant_demo", skill_id="published_existing", version="1.0.0",
+            name="已有技能", business_domain="电商", description="已有技能",
+            status="published", content_json=_graph("已有技能", "1.0.0"),
+        )
+        db.add(agent)
+        db.add(target)
+        db.add(existing)
+        db.flush()
+        ensure_open_gallery_binding(db, "tenant_demo", "skill", target.id, "active")
+        ensure_open_gallery_binding(db, "tenant_demo", "skill", existing.id, "active")
+        db.commit()
+
+        copy_overall_scope_to_agent(db, "tenant_demo", agent)
+        target_branch = db.exec(select(AgentSkillBranch).where(
+            AgentSkillBranch.tenant_id == "tenant_demo",
+            AgentSkillBranch.agent_id == agent.id,
+            AgentSkillBranch.skill_id == target.skill_id,
+        )).one()
+        existing_branch = db.exec(select(AgentSkillBranch).where(
+            AgentSkillBranch.tenant_id == "tenant_demo",
+            AgentSkillBranch.agent_id == agent.id,
+            AgentSkillBranch.skill_id == existing.skill_id,
+        )).one()
+        target_branch.updated_at = datetime(2026, 1, 2, tzinfo=UTC)
+        existing_branch.updated_at = datetime(2026, 1, 1)
+        db.add(target_branch)
+        db.add(existing_branch)
+        db.commit()
+
+        published = publish_skill(target.skill_id, "tenant_demo", agent.id, db, _admin_user())
+
+        assert published.status == "published"
+        assert published.skill_id == target.skill_id
 
 
 def test_disabled_open_gallery_resources_cannot_be_learned() -> None:
