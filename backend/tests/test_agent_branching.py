@@ -6,6 +6,7 @@ import sqlite3
 import pytest
 from fastapi import HTTPException
 from sqlalchemy.exc import OperationalError
+from sqlalchemy.orm.attributes import set_committed_value
 from sqlalchemy.pool import StaticPool
 from sqlmodel import Session, SQLModel, create_engine, select
 
@@ -1333,11 +1334,13 @@ def test_publish_skill_handles_mixed_persisted_datetime_awareness() -> None:
             AgentSkillBranch.skill_id == existing.skill_id,
         )).one()
         target_branch.updated_at = datetime(2026, 1, 2, tzinfo=UTC)
-        existing_branch.updated_at = datetime(2026, 1, 1)
+        existing_branch.updated_at = datetime(2026, 1, 1, tzinfo=UTC)
         db.add(target_branch)
         db.add(existing_branch)
         db.commit()
 
+        # Model a legacy row read without a timezone, bypassing modern bind validation.
+        set_committed_value(existing_branch, "updated_at", datetime(2026, 1, 1))
         published = publish_skill(target.skill_id, "tenant_demo", agent.id, db, _admin_user())
 
         assert published.status == "published"
