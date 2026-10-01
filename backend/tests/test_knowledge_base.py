@@ -470,6 +470,11 @@ def test_knowledge_ingest_stale_cancel_request_finalizes_without_worker() -> Non
         db.commit()
         service = KnowledgeService(db)
 
+        # SQLite reloads the persisted UTC timestamp without timezone metadata.
+        db.refresh(job)
+        assert job.updated_at.tzinfo is None
+        assert service.finalize_stale_cancel_requested_job(job, timedelta(minutes=2)) is None
+        assert job.status == "cancel_requested"
         finalized = service.finalize_stale_cancel_requested_job(job)
 
         assert finalized is not None
