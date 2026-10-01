@@ -2172,19 +2172,21 @@ def _aggregate_artifacts(
     results: list[TaskExecutionResult],
 ) -> list[dict[str, Any]]:
     artifacts: list[dict[str, Any]] = []
-    seen: set[str] = set()
+    positions: dict[str, int] = {}
     for result in results:
         for artifact in result.artifacts:
             identity = "|".join(
                 str(artifact.get(field) or "")
                 for field in ("type", "task_frame_id", "path", "handoff_id")
             )
-            if not identity.strip("|") or identity in seen:
+            if not identity.strip("|"):
                 continue
-            seen.add(identity)
-            artifacts.append(dict(artifact))
-            if len(artifacts) >= 20:
-                return artifacts
+            # Later discovery is authoritative for a same-frame/path rewrite.
+            if identity in positions:
+                artifacts[positions[identity]] = dict(artifact)
+            elif len(artifacts) < 20:
+                positions[identity] = len(artifacts)
+                artifacts.append(dict(artifact))
     return artifacts
 
 
@@ -2192,19 +2194,9 @@ def _merge_discovered_artifacts(
     result: TaskExecutionResult,
     discovered: list[dict[str, Any]],
 ) -> None:
-    known_paths = {
-        str(item.get("path") or "")
-        for item in result.artifacts
-        if isinstance(item, dict) and item.get("path")
-    }
-    for item in discovered:
-        path = str(item.get("path") or "")
-        if not path or path in known_paths:
-            continue
-        result.artifacts.append(dict(item))
-        known_paths.add(path)
-        if len(result.artifacts) >= 20:
-            break
+    result.artifacts = _aggregate_artifacts([
+        result, result.model_copy(update={"artifacts": discovered}),
+    ])
 
 
 

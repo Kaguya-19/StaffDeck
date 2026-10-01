@@ -28,6 +28,7 @@ from app.core.handoff_reply_service import (  # noqa: F401 - legacy import compa
 )
 from app.core.harness_session_cleanup import harness_task_workspace_path
 from app.core.harness_turn_store import HarnessTurnStore
+from app.core.published_deliverables import find_published_deliverable
 from app.core.slash_commands import SlashCommandRead, slash_command_catalog
 from app.db import engine, get_session
 from app.db.models import (
@@ -50,7 +51,6 @@ from app.db.models import (
 from app.feedback import enqueue_feedback_analysis
 from app.harness import (
     HarnessArtifactAccessError,
-    normalize_harness_artifact_path,
     open_harness_artifact,
 )
 from app.llm import LLMClient, LLMError
@@ -2477,38 +2477,10 @@ def _published_workspace_artifact(
     task_frame_id: str,
     requested_path: str,
 ) -> dict[str, object] | None:
-    try:
-        normalized_requested_path = normalize_harness_artifact_path(requested_path)
-    except HarnessArtifactAccessError:
-        return None
-    rows = db.exec(
-        select(Message).where(
-            Message.tenant_id == tenant_id,
-            Message.session_id == session_id,
-            Message.role == "assistant",
-        )
-    ).all()
-    for row in rows:
-        artifacts = (row.metadata_json or {}).get("harness_artifacts")
-        if not isinstance(artifacts, list):
-            continue
-        for artifact in artifacts:
-            if not isinstance(artifact, dict):
-                continue
-            if artifact.get("type") != "workspace_file":
-                continue
-            if str(artifact.get("task_frame_id") or "") != task_frame_id:
-                continue
-            stored_path = artifact.get("path")
-            if not isinstance(stored_path, str):
-                continue
-            try:
-                normalized_stored_path = normalize_harness_artifact_path(stored_path)
-            except HarnessArtifactAccessError:
-                continue
-            if normalized_stored_path == normalized_requested_path:
-                return dict(artifact)
-    return None
+    return find_published_deliverable(
+        db, tenant_id=tenant_id, session_id=session_id,
+        task_frame_id=task_frame_id, path=requested_path,
+    )
 
 
 def _safe_artifact_download_name(filename: str) -> str:
