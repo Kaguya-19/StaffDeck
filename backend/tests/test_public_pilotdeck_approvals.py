@@ -106,7 +106,7 @@ def native_consumer(monkeypatch):
     with Session(engine) as db:
         user = User(id="approver", tenant_id="tenant", username="approver",
                     password_hash="unused", role="member", source="web")
-        assert not hasattr(user, "disabled")
+        assert user.disabled is False
         db.add(user)
         db.commit()
         token = create_access_token(user)
@@ -137,7 +137,7 @@ def test_matching_native_user_uses_real_auth_for_status_and_receipt(native_consu
     assert calls[-1].headers["x-staffdeck-approver-authorization"] == headers["authorization"]
 
 
-@pytest.mark.parametrize("field,value", [("source", "channel"), ("role", "guest"), ("tenant_id", "other")])
+@pytest.mark.parametrize("field,value", [("source", "channel"), ("role", "guest"), ("tenant_id", "other"), ("disabled", True)])
 def test_native_subject_boundaries(native_consumer, field, value):
     client, db, user, headers, calls = native_consumer
     setattr(user, field, value)
