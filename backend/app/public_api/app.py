@@ -5,6 +5,9 @@ from uuid import uuid4
 
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.exceptions import RequestValidationError
+from starlette.concurrency import run_in_threadpool
+from starlette.datastructures import MutableHeaders
+from starlette.types import ASGIApp, Message, Receive, Scope, Send
 from sqlmodel import Session
 
 from app.config import get_settings
@@ -18,6 +21,43 @@ from app.public_api.errors import (
     public_validation_error_handler,
 )
 from app.public_api.utils import audit_request
+
+
+class RequestAuditMiddleware:
+    def __init__(self, app: ASGIApp):
+        self.app = app
+
+    async def __call__(self, scope: Scope, receive: Receive, send: Send):
+        if scope["type"] != "http":
+            return await self.app(scope, receive, send)
+        request = Request(scope)
+        request.state.request_id = request.headers.get("X-Request-ID") or f"req_{uuid4().hex}"
+        started = perf_counter()
+        status_code = 500
+
+        async def send_response(message: Message):
+            nonlocal status_code
+            if message["type"] == "http.response.start":
+                status_code = message["status"]
+                MutableHeaders(scope=message)["X-Request-ID"] = request.state.request_id
+            await send(message)
+
+        def persist_audit():
+            try:
+                with Session(engine) as db:
+                    audit_request(
+                        db, request, getattr(request.state, "public_principal", None),
+                        status_code=status_code, duration_ms=(perf_counter() - started) * 1000,
+                    )
+            except Exception:
+                pass
+
+        try:
+            await self.app(scope, receive, send_response)
+        finally:
+            # Dependency sessions (including streaming responses) have now closed.
+            # Audit on a separate connection only after their write locks release.
+            await run_in_threadpool(persist_audit)
 
 
 def create_public_api_app() -> FastAPI:
@@ -38,28 +78,7 @@ def create_public_api_app() -> FastAPI:
     app.add_exception_handler(HTTPException, public_http_error_handler)
     app.add_exception_handler(RequestValidationError, public_validation_error_handler)
 
-    @app.middleware("http")
-    async def request_context(request: Request, call_next):
-        request.state.request_id = request.headers.get("X-Request-ID") or f"req_{uuid4().hex}"
-        started = perf_counter()
-        status_code = 500
-        try:
-            response = await call_next(request)
-            status_code = response.status_code
-            response.headers["X-Request-ID"] = request.state.request_id
-            return response
-        finally:
-            try:
-                with Session(engine) as db:
-                    audit_request(
-                        db,
-                        request,
-                        getattr(request.state, "public_principal", None),
-                        status_code=status_code,
-                        duration_ms=(perf_counter() - started) * 1000,
-                    )
-            except Exception:
-                pass
+    app.add_middleware(RequestAuditMiddleware)
 
     @app.get("/health", tags=["health"])
     def health() -> dict[str, str]:
