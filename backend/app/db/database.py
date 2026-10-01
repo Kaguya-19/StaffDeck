@@ -2239,6 +2239,9 @@ def _migrate_harness_v2_schema(conn, inspector, tables: set[str]) -> None:
 
 
 def _migrate_knowledge_base_schema(conn, inspector, tables: set[str]) -> None:
+    legacy_documents = "knowledge_documents" in tables and "knowledge_base_version_id" not in {
+        column["name"] for column in inspector.get_columns("knowledge_documents")
+    }
     tenant_ids = _tenant_ids(conn, tables)
     default_ids: dict[str, str] = {}
     if "knowledge_bases" in tables:
@@ -2392,7 +2395,10 @@ def _migrate_knowledge_base_schema(conn, inspector, tables: set[str]) -> None:
                 },
             )
 
-    _split_document_backed_knowledge_bases(conn, tables)
+    # Only the pre-version document schema needs conversion. Current uploads and
+    # edited version copies must keep their original resource/branch identities.
+    if legacy_documents:
+        _split_document_backed_knowledge_bases(conn, tables)
 
 
 def _split_document_backed_knowledge_bases(conn, tables: set[str]) -> None:
@@ -2424,6 +2430,24 @@ def _split_document_backed_knowledge_bases(conn, tables: set[str]) -> None:
             {"id": source_knowledge_base_id},
         ).mappings().first()
         if not source:
+            continue
+        # Even legacy rows may already have owner associations. Do not invent
+        # replacement grants or reset their branch/version/privacy semantics.
+        associated = False
+        for table_name, column_name in (
+            ("agent_knowledge_branches", "knowledge_base_id"),
+            ("agent_resource_bindings", "resource_id"),
+        ):
+            if table_name not in tables:
+                continue
+            resource_clause = " AND resource_type = 'knowledge_base'" if table_name == "agent_resource_bindings" else ""
+            if conn.execute(text(
+                f"SELECT 1 FROM {table_name} WHERE tenant_id = :tenant_id "
+                f"AND {column_name} = :id{resource_clause} LIMIT 1"
+            ), {"tenant_id": source["tenant_id"], "id": source_knowledge_base_id}).first():
+                associated = True
+                break
+        if associated:
             continue
         documents = conn.execute(
             text(
