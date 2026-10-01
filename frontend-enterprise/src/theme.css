@@ -16,7 +16,7 @@ html.dark body, html.dark .app-shell, html.dark .content { background: var(--bac
 html.dark .sidebar { background: var(--sidebar) !important; border-color: var(--border); }
 /* Map legacy light neutral business surfaces to the selected theme. */
 html.dark :is([class~="bg-white"], [class~="bg-[#ffffff]"], [class~="bg-[#FFFFFF]"],
-  [class~="bg-[#fcfcfc]"], [class~="bg-[#FCFCFC]"], [class~="bg-[#fafafa]"],
+  [class~="bg-[#fcfcfc]"], [class~="bg-[#FCFCFC]"], [class~="bg-[#fafafa]"], [class~="bg-[#fafbfc]"],
   .data-card, .editor-card, .conversation-log-card, .ui-card) { background-color: var(--surface) !important; }
 html.dark :is([class~="bg-[#f6f6f6]"], [class~="bg-[#F6F6F6]"], [class~="bg-[#f2f3f7]"],
   [class~="bg-[#f7f8fa]"], [class~="bg-[#f3f4f6]"], [class~="bg-[#eef1fb]"], [class~="bg-[#f8f8f9]"]) { background-color: var(--surface-muted) !important; }
