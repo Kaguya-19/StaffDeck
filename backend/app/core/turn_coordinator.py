@@ -1397,6 +1397,7 @@ class TurnCoordinator:
                 "execution_loop_id": agent_loop.id,
                 "current_user_message": request.message,
             })
+            _project_sop_approval_authority(self.db, session, requirement)
             self.store.save_requirement(
                 row,
                 requirement.model_dump(mode="json"),
@@ -2073,6 +2074,26 @@ def _response_task_payload(
         "structured_result": result.structured_result,
         "artifacts": list(result.artifacts),
     }
+
+
+def _project_sop_approval_authority(db, session: ChatSession, requirement) -> None:
+    from app.db.models import HumanHandoffRequest
+
+    sop_id = str((requirement.sop_context or {}).get("skill_id") or "").strip()
+    if requirement.kind != "sop" or not sop_id:
+        return
+    authority = {"sopId": sop_id}
+    handoff = db.exec(
+        select(HumanHandoffRequest).where(
+            HumanHandoffRequest.tenant_id == session.tenant_id,
+            HumanHandoffRequest.session_id == session.id,
+            HumanHandoffRequest.trigger_skill_id == sop_id,
+        ).order_by(HumanHandoffRequest.created_at.desc())
+    ).first()
+    if handoff is not None and handoff.status in {"answered", "resolved"} and handoff.assignee_user_id:
+        authority.update({"assigneeUserId": handoff.assignee_user_id,
+                          "handoffId": handoff.id, "approvalStatus": handoff.status})
+    requirement.sop_context = {**requirement.sop_context, "authority": authority}
 
 
 def _inject_handoff_context(
