@@ -120,7 +120,8 @@ def _new_draft(
 ) -> APISOPDraft:
     card = SkillCard.model_validate(content)
     normalized = card.model_dump(mode="json")
-    runtime = _runtime_skill(db, tenant_id, card.skill_id)
+    runtime = next((row for row in visible_published_skills(db, tenant_id, agent_id)
+                    if row.skill_id == card.skill_id), None)
     base = base_version if base_version is not None else (runtime.version if runtime else None)
     normalized["version"] = _next_version(base) if base else normalized.get("version", "1.0.0")
     row = APISOPDraft(
@@ -363,6 +364,11 @@ def create_structured_sop(
     if replay:
         response.status_code = replay[0]
         return replay[1]
+    if body.base_version is not None:
+        sop_id = str(body.content.get("skill_id") or "")
+        selected = _version_payload(db, principal, agent_id, sop_id, body.base_version)
+        if selected.get("status") not in {"published", "active"}:
+            raise PublicAPIError(404, "SOP_VERSION_NOT_FOUND", "Published SOP version not found.")
     try:
         row = _new_draft(
             db,
@@ -371,6 +377,7 @@ def create_structured_sop(
             credential_id=principal.credential_id,
             content=body.content,
             source="structured",
+            base_version=body.base_version,
         )
     except ValidationError as exc:
         raise PublicAPIError(422, "INVALID_SOP", "The SOP graph is invalid.", errors=exc.errors()) from exc

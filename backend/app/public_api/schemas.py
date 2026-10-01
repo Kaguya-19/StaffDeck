@@ -175,6 +175,7 @@ class SOPRewritePublicRequest(BaseModel):
 
 class SOPStructuredCreate(BaseModel):
     content: dict[str, Any]
+    base_version: str | None = Field(default=None, min_length=1)
 
 
 class SOPPublishRequest(BaseModel):
