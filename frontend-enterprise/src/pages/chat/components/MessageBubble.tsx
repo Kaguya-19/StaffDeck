@@ -1,4 +1,5 @@
 import EmployeeAvatar from '@/components/EmployeeAvatar';
+import { useI18n } from '@/i18n';
 import StaffdeckIcon from '@/components/StaffdeckIcon';
 import IconThumbUp from '@/assets/icons/thumb-up.svg?react';
 import IconThumbDown from '@/assets/icons/thumb-down.svg?react';
@@ -93,6 +94,7 @@ function activeTeamProgress(item: ChatMessage): { phase: string; statusText: str
 }
 
 export default function MessageBubble({ chat, item, render }: MessageBubbleProps) {
+  const { t } = useI18n();
   const {
     toggleTrace,
     rateMessage,
@@ -192,7 +194,7 @@ export default function MessageBubble({ chat, item, render }: MessageBubbleProps
                         key={key}
                         type="button"
                         className={CHAT_INLINE_CITATION_CLASS}
-                        aria-label={`打开引用 [${number}]`}
+                        aria-label={t('打开引用 [{1}]', { 1: number })}
                         onClick={() => setActiveCitation(citation)}
                       >
                         [{number}]

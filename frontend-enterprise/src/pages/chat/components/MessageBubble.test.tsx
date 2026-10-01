@@ -1,12 +1,34 @@
 // @vitest-environment jsdom
 
-import { render, screen } from '@testing-library/react';
-import { describe, expect, it, vi } from 'vitest';
+import { render as renderUI, screen, cleanup, fireEvent } from '@testing-library/react';
+import { I18nProvider } from '@/i18n';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import type { AgentProfileRead, ChatMessage, ChatSlashCommand, TeamRead } from '@/types';
 
 import type { UseChatSession } from '../useChatSession';
 import MessageBubble, { type MessageRender } from './MessageBubble';
+
+function render(element: React.ReactElement) {
+  return renderUI(<I18nProvider>{element}</I18nProvider>);
+}
+afterEach(() => { cleanup(); localStorage.clear(); });
+
+it('localizes the citation action inside ignored answer content and preserves its source', () => {
+  cleanup();
+  localStorage.setItem('staffdeck_locale', 'en-US');
+  const source = { label: '[1]', content: 'Original source', document_id: 'document' };
+  const open = vi.fn();
+  const item = { id: 'answer', role: 'assistant', content: '原文 [1]', created_at: '' } as ChatMessage;
+  const chat = { setActiveCitation: open, slashCommands: [], toggleTrace: vi.fn(), rateMessage: vi.fn() } as unknown as UseChatSession;
+  const details = { visibleContent: item.content, citations: [source], attachments: [], harnessArtifacts: [], details: [] } as unknown as MessageRender;
+  render(<MessageBubble chat={chat} item={item} render={details} />);
+  fireEvent.click(screen.getByRole('button', { name: 'Open citation [1]' }));
+  expect(open).toHaveBeenCalledWith(source);
+  expect(screen.getByText(/原文/)).toBeTruthy();
+  cleanup();
+  localStorage.clear();
+});
 
 const weatherCommand: ChatSlashCommand = {
   kind: 'skill',
