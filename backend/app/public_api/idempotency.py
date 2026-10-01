@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from datetime import timedelta
+from datetime import UTC, timedelta
 import hashlib
 import json
 from typing import Any
@@ -48,7 +48,11 @@ def replay_idempotent_response(
     ).first()
     if not row:
         return None
-    if row.expires_at <= utc_now():
+    # SQLite may decode UTC timestamps without timezone information.
+    expires_at = row.expires_at
+    if expires_at.tzinfo is None:
+        expires_at = expires_at.replace(tzinfo=UTC)
+    if expires_at <= utc_now():
         db.delete(row)
         db.commit()
         return None
