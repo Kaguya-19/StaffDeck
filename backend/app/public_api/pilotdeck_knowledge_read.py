@@ -97,6 +97,16 @@ def read_module_call(
         return _failure(call, 422, "KNOWLEDGE_INPUT_INVALID", "Knowledge query is empty")
     try:
         enforce_public_knowledge_pep(db, principal, agent_id)
+        if "authorityContext" in call.payload:
+            from app.public_api.sop_capability_authority import constrain_query, resolve_execution_authority
+            if set(call.payload) != {"operation", "input", "authorityContext"} \
+                    or set(raw) - {"query", "knowledgeBaseIds", "knowledgeBaseVersionIds", "documentIds", "maxChunks"} \
+                    or any(key in raw and (not isinstance(raw[key], list) or any(not isinstance(value, str) or not value.strip() for value in raw[key]))
+                           for key in ("knowledgeBaseIds", "knowledgeBaseVersionIds", "documentIds")) \
+                    or ("maxChunks" in raw and (type(raw["maxChunks"]) is not int or not 1 <= raw["maxChunks"] <= 12)):
+                return _failure(call, 422, "SOP_AUTHORITY_INPUT_INVALID", "Unsupported authority-bound query input")
+            projection = resolve_execution_authority(db, principal, agent_id, call.payload["authorityContext"])
+            query = constrain_query(query, projection, db, principal, agent_id)
         with use_public_host_retrieval():
             result = native_knowledge.search_knowledge(query, db, principal.actor_user)
     except PublicAPIError as exc:
@@ -108,3 +118,35 @@ def read_module_call(
         "inReplyTo": call.messageId, "requestId": call.requestId, "ok": True,
         "payload": {"result": result.model_dump(mode="json")},
     })
+
+
+@router.get("/sop-capability-authority/module-manifest")
+def authority_manifest() -> dict[str, Any]:
+    return {"protocolVersion": "2.0", "implementationId": "staffdeck.sop-capability-authority",
+            "contract": "staffdeck.sop-capability-authority/v1", "transport": "module-http-v2",
+            "methods": ["resolve"]}
+
+
+@router.post("/agents/{agent_id}/sop-capability-authority/v2/module/call")
+def authority_call(agent_id: str, body: dict[str, Any],
+                   principal: PublicPrincipal = Depends(require_scopes("knowledge:read")),
+                   db: Session = Depends(get_session)) -> JSONResponse:
+    from app.public_api.sop_capability_authority import resolve_authority
+
+    try:
+        call = _ModuleCall.model_validate(body)
+    except ValidationError as exc:
+        raise HTTPException(400, "Invalid module call envelope") from exc
+    if call.kind != "request" or call.method != "module_call" or call.module != "capability" \
+            or call.payload.get("operation") != "resolve" or set(call.payload) != {"operation", "input"}:
+        return _failure(call, 400, "MODULE_PROTOCOL_INCOMPATIBLE", "Only authority resolve is available")
+    try:
+        enforce_public_knowledge_pep(db, principal, agent_id)
+        result = resolve_authority(db, principal, agent_id, call.payload.get("input"))
+    except PublicAPIError as exc:
+        return _failure(call, exc.status_code, exc.code, exc.detail)
+    except HTTPException as exc:
+        return _failure(call, exc.status_code, f"STAFFDECK_HTTP_{exc.status_code}", str(exc.detail))
+    return JSONResponse(content={"kind": "response", "messageId": f"response-{call.messageId}",
+        "inReplyTo": call.messageId, "requestId": call.requestId, "ok": True,
+        "payload": {"result": result}})

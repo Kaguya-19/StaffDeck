@@ -146,6 +146,29 @@ class PilotDeckDomainHostClient:
                 raise RuntimeError("PUBLIC_HOST_SOP_PLAN_INVALID") from exc
         return planner.normalize_plan(plan, message, session, routing_skills, [], "normal", None)
 
+    def read_sop_authority(self, *, tenant_id: str, actor_user_id: str, agent_id: str,
+                           credential_id: str, context: dict[str, Any]) -> dict[str, Any]:
+        from app.public_api.errors import PublicAPIError
+
+        with httpx.Client(base_url=self.origin, transport=self.transport,
+                          timeout=10, follow_redirects=False) as client:
+            try:
+                response = client.post("/api/module-host/call",
+                    headers={"Authorization": f"Bearer {self.bridge_token}"},
+                    json={"principal": {"pilotDeckUserId": self.pilotdeck_user_id,
+                          "tenantId": tenant_id, "actorUserId": actor_user_id, "agentId": agent_id},
+                          "operation": "read_sop_authority",
+                          "input": {**context, "admissionCredentialId": credential_id}})
+                body = response.json()
+            except (httpx.RequestError, ValueError) as exc:
+                raise RuntimeError("PUBLIC_HOST_SOP_AUTHORITY_UNAVAILABLE") from exc
+        if not response.is_success:
+            code = body.get("code") if isinstance(body, dict) else None
+            raise PublicAPIError(response.status_code,
+                code if isinstance(code, str) and code.startswith("SOP_") else "SOP_AUTHORITY_HOST_REJECTED",
+                "The admitted SOP owner rejected this request.")
+        return body
+
     def file_parse(
         self, *, tenant_id: str, actor_user_id: str, agent_id: str,
         filename: str, content_base64: str, media_type: str | None,
