@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from datetime import UTC, datetime
 import hashlib
 import hmac
 import secrets
@@ -70,6 +71,13 @@ def _api_key_principal(token: str, db: Session) -> PublicPrincipal:
     return principal_for_credential(db, credential.id)
 
 
+def normalize_credential_expiry(value: datetime | None) -> datetime | None:
+    if value is None:
+        return None
+    # SQLite returns stored UTC timestamps without timezone information.
+    return value.replace(tzinfo=UTC) if value.tzinfo is None else value.astimezone(UTC)
+
+
 def principal_for_credential(db: Session, credential_id: str) -> PublicPrincipal:
     """Revalidate the same stored grant for admission AND deferred execution."""
     credential = db.get(APICredential, credential_id)
@@ -78,7 +86,8 @@ def principal_for_credential(db: Session, credential_id: str) -> PublicPrincipal
     now = utc_now()
     if credential.status != "active" or credential.revoked_at is not None:
         raise PublicAPIError(401, "API_KEY_REVOKED", "The API key has been revoked.")
-    if credential.expires_at is not None and credential.expires_at <= now:
+    expiry = normalize_credential_expiry(credential.expires_at)
+    if expiry is not None and expiry <= now:
         raise PublicAPIError(401, "API_KEY_EXPIRED", "The API key has expired.")
     client = db.get(APIClient, credential.client_id)
     if not client or client.tenant_id != credential.tenant_id or client.status != "active":

@@ -11,7 +11,7 @@ from sqlmodel import Session, select
 
 from app.db import get_session
 from app.db.models import APIClient, APICredential, User, UserAvatar, utc_now
-from app.public_api.auth import generate_api_key
+from app.public_api.auth import generate_api_key, normalize_credential_expiry
 from app.public_api.credential_profiles import USER_FULL_ACCESS_SCOPES
 from app.security.auth import (
     create_access_token,
@@ -436,7 +436,7 @@ def create_account_api_credential(
         key_prefix=prefix,
         key_digest=digest,
         scopes_json=sorted(USER_FULL_ACCESS_SCOPES),
-        expires_at=request.expires_at,
+        expires_at=normalize_credential_expiry(request.expires_at),
     )
     db.add(row)
     db.commit()

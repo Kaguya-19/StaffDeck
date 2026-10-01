@@ -8,6 +8,7 @@ from app.db.models import APIClient, APICredential, AgentProfile, utc_now
 from app.public_api.auth import (
     PublicPrincipal,
     generate_api_key,
+    normalize_credential_expiry,
     get_public_or_admin_principal,
 )
 from app.public_api.credential_profiles import AGENT_KEY_ALLOWED_SCOPES
@@ -203,7 +204,7 @@ def create_api_credential(
         key_prefix=prefix,
         key_digest=digest,
         scopes_json=sorted(scopes),
-        expires_at=request.expires_at,
+        expires_at=normalize_credential_expiry(request.expires_at),
     )
     db.add(row)
     db.commit()
