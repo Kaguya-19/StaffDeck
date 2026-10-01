@@ -12,6 +12,7 @@ class ModelConfigCreateRequest(BaseModel):
     api_protocol: Optional[str] = None
     base_url: Optional[str] = None
     api_key: str = Field(default="", repr=False)
+    secret_ref: Optional[str] = None
     model: str
     temperature: float = 0.2
     max_output_tokens: int = 8192
@@ -28,6 +29,7 @@ class ModelConfigUpdateRequest(BaseModel):
     api_protocol: Optional[str] = None
     base_url: Optional[str] = None
     api_key: Optional[str] = Field(default=None, repr=False)
+    secret_ref: Optional[str] = None
     model: Optional[str] = None
     temperature: Optional[float] = None
     max_output_tokens: Optional[int] = None
@@ -45,6 +47,9 @@ class ModelConfigRead(BaseModel):
     api_protocol: str
     base_url: Optional[str]
     api_key_masked: str
+    secret_ref: Optional[str] = None
+    secret_ref_revision: Optional[str] = None
+    credential_configured: bool = False
     model: str
     temperature: float
     max_output_tokens: int

@@ -14,15 +14,16 @@ from app.db.models import AgentModelBinding, ModelConfig, User, utc_now
 from app.llm import LLMClient, LLMError
 from app.llm.model_config_resolver import (
     ResolvedModelConfig,
+    _fingerprint,
     resolve_model_config_for_verification,
     snapshot_model_config,
 )
+from app.llm.model_credentials import model_secret_binding, resolve_secret_binding
 from app.llm.model_protocols import (
     LEGACY_OPENAI_PROVIDER,
     ModelApiProtocol,
     available_model_protocols,
     current_protocol_options,
-    model_config_fingerprint,
     normalize_chat_protocol_options,
     resolve_api_protocol,
     validate_model_base_url,
@@ -63,7 +64,14 @@ def list_model_protocols(tenant_id: str = Query(...)) -> dict[str, list[str]]:
 
 
 def model_config_read(row: ModelConfig) -> ModelConfigRead:
-    api_key = decrypt_secret(row.api_key_encrypted)
+    api_key = "" if row.secret_ref else decrypt_secret(row.api_key_encrypted)
+    configured = bool(api_key)
+    if row.secret_ref:
+        try:
+            model_secret_binding(row)
+            configured = True
+        except HTTPException:
+            configured = False
     extra_body = row.extra_body_json if isinstance(row.extra_body_json, dict) else {}
     return ModelConfigRead(
         id=row.id,
@@ -73,6 +81,9 @@ def model_config_read(row: ModelConfig) -> ModelConfigRead:
         api_protocol=row.api_protocol,
         base_url=row.base_url,
         api_key_masked=mask_secret(api_key),
+        secret_ref=row.secret_ref,
+        secret_ref_revision=row.secret_ref_revision,
+        credential_configured=configured,
         model=row.model,
         temperature=row.temperature,
         max_output_tokens=row.max_output_tokens,
@@ -113,8 +124,11 @@ def create_model_config(
     ensure_tenant_admin(request.tenant_id, current_user)
     ensure_tenant(db, request.tenant_id)
     protocol = resolve_api_protocol(request.api_protocol, request.provider)
-    if not request.api_key:
+    if request.api_key and request.secret_ref:
+        raise HTTPException(status_code=422, detail="MODEL_CREDENTIAL_SOURCE_CONFLICT")
+    if not request.api_key and not request.secret_ref:
         raise HTTPException(status_code=422, detail="MODEL_API_KEY_REQUIRED")
+    binding = resolve_secret_binding(request.tenant_id, request.secret_ref) if request.secret_ref else None
     validate_model_base_url(request.base_url)
     _validate_sampling(protocol, request.temperature, request.max_output_tokens)
     options = _request_protocol_options(request.protocol_options, protocol)
@@ -125,7 +139,9 @@ def create_model_config(
         provider=LEGACY_OPENAI_PROVIDER,
         api_protocol=protocol.value,
         base_url=request.base_url,
-        api_key_encrypted=encrypt_secret(request.api_key),
+        api_key_encrypted="" if binding else encrypt_secret(request.api_key),
+        secret_ref=request.secret_ref,
+        secret_ref_revision=binding.revision if binding else None,
         model=request.model,
         temperature=request.temperature,
         max_output_tokens=request.max_output_tokens,
@@ -181,6 +197,20 @@ def update_model_config(
             security_changed = True
     if request.api_key not in {None, ""}:
         security_changed = True
+    reference_requested = "secret_ref" in request.model_fields_set
+    if request.api_key and request.secret_ref:
+        raise HTTPException(status_code=422, detail="MODEL_CREDENTIAL_SOURCE_CONFLICT")
+    if reference_requested and not request.secret_ref and not request.api_key:
+        raise HTTPException(status_code=422, detail="MODEL_API_KEY_REQUIRED")
+    target_ref = request.secret_ref if reference_requested else row.secret_ref
+    if request.api_key:
+        target_ref = None
+    binding = resolve_secret_binding(row.tenant_id, target_ref) if target_ref else None
+    reference_changed = target_ref != row.secret_ref or (binding and binding.revision != row.secret_ref_revision)
+    if binding and row.trust_status == "verified" and not reference_changed:
+        reference_changed = row.verified_fingerprint != _fingerprint(row)
+    if reference_changed:
+        security_changed = True
     requested_options = None
     if request.protocol_options is not None:
         requested_options = _request_protocol_options(request.protocol_options, protocol)
@@ -201,6 +231,12 @@ def update_model_config(
     if request.api_key not in {None, ""}:
         row.api_key_encrypted = encrypt_secret(request.api_key)
         row.key_revision += 1
+    elif reference_changed:
+        row.key_revision += 1
+    row.secret_ref = target_ref
+    row.secret_ref_revision = binding.revision if binding else None
+    if binding:
+        row.api_key_encrypted = ""
     if requested_options is not None:
         partitioned = dict(row.protocol_options_json or {})
         partitioned[protocol.value] = requested_options
@@ -305,6 +341,7 @@ def test_model_config(
     db: Session = Depends(get_session),
 ) -> ModelConfigTestResponse:
     row = _get_model_config(db, tenant_id, config_id)
+    _refresh_reference_binding(row)
     initial_activation_candidate = (
         activate_if_initial
         and row.trust_status == "unverified"
@@ -328,6 +365,7 @@ def test_model_config(
             row.security_revision != started_security_revision
             or row.verification_attempt_id != attempt_id
             or row.verification_attempt_status != "verifying"
+            or (config.secret_ref and config.secret_binding_generation != model_secret_binding(row).generation)
         ):
             return ModelConfigTestResponse(
                 success=False,
@@ -341,7 +379,7 @@ def test_model_config(
         activated = False
         row.trust_status = "verified"
         row.verified_at = utc_now()
-        row.verified_fingerprint = _fingerprint(row)
+        row.verified_fingerprint = _fingerprint(row, binding_generation=config.secret_binding_generation)
         row.verification_attempt_status = "succeeded"
         if initial_activation_candidate and not _has_available_model(db, tenant_id):
             row.enabled = True
@@ -367,7 +405,7 @@ def test_model_config(
                 )
             row.trust_status = "verified"
             row.verified_at = utc_now()
-            row.verified_fingerprint = _fingerprint(row)
+            row.verified_fingerprint = _fingerprint(row, binding_generation=config.secret_binding_generation)
             row.verification_attempt_status = "succeeded"
             db.add(row)
             db.commit()
@@ -434,14 +472,16 @@ def _verify_candidate_for_save(row: ModelConfig) -> None:
     row.verification_attempt_status = "verifying"
     row.verification_started_at = utc_now()
     row.verification_attempt_error_code = None
-    config = replace(snapshot_model_config(row), purpose="verification")
+    config = snapshot_model_config(row, purpose="verification")
     try:
         _run_verification_probes(config)
     except LLMError as exc:
         raise HTTPException(status_code=502, detail=exc.public_detail()) from exc
+    if config.secret_ref and config.secret_binding_generation != model_secret_binding(row).generation:
+        raise HTTPException(status_code=409, detail="MODEL_VERIFICATION_STALE")
     row.trust_status = "verified"
     row.verified_at = utc_now()
-    row.verified_fingerprint = _fingerprint(row)
+    row.verified_fingerprint = _fingerprint(row, binding_generation=config.secret_binding_generation)
     row.verification_attempt_status = "succeeded"
 
 
@@ -572,22 +612,28 @@ def _validate_sampling(
 
 
 def _require_trusted(row: ModelConfig) -> None:
-    if row.trust_status == "legacy_trusted" and row.api_protocol == "openai_chat_completions":
+    model_secret_binding(row)
+    if not row.secret_ref and row.trust_status == "legacy_trusted" and row.api_protocol == "openai_chat_completions":
         return
     if row.trust_status != "verified" or row.verified_fingerprint != _fingerprint(row):
         raise HTTPException(status_code=409, detail="MODEL_CONFIG_VERIFICATION_REQUIRED")
 
 
-def _fingerprint(row: ModelConfig) -> str:
-    protocol = ModelApiProtocol(row.api_protocol)
-    return model_config_fingerprint(
-        api_protocol=row.api_protocol,
-        base_url=row.base_url,
-        model=row.model,
-        key_revision=row.key_revision,
-        protocol_options=current_protocol_options(row.protocol_options_json, protocol),
-        security_revision=row.security_revision,
-    )
+def _refresh_reference_binding(row: ModelConfig) -> None:
+    if not row.secret_ref:
+        return
+    binding = resolve_secret_binding(row.tenant_id, row.secret_ref)
+    changed = binding.revision != row.secret_ref_revision
+    row.secret_ref_revision = binding.revision
+    if changed or (row.trust_status == "verified" and row.verified_fingerprint != _fingerprint(row)):
+        row.key_revision += 1
+        row.security_revision += 1
+        row.config_revision += 1
+        row.trust_status = "unverified"
+        row.verified_at = None
+        row.verified_fingerprint = None
+        row.enabled = False
+        row.is_default = False
 
 
 def _commit_or_conflict(db: Session) -> None:

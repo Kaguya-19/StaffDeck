@@ -96,7 +96,14 @@ class LLMClient:
             )
         except ValueError as exc:
             raise LLMError("MODEL_PROTOCOL_UNSUPPORTED") from exc
-        api_key = decrypt_secret(model_config.api_key_encrypted)
+        if getattr(model_config, "secret_ref", None):
+            from app.llm.model_config_resolver import snapshot_model_config
+            from app.llm.model_credentials import model_secret_binding
+
+            model_config = snapshot_model_config(model_config)
+            api_key = model_secret_binding(model_config).value
+        else:
+            api_key = decrypt_secret(model_config.api_key_encrypted)
         if not api_key:
             raise LLMError("Model API key is not configured")
         self.timeout_seconds = (

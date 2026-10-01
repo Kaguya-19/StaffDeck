@@ -126,6 +126,7 @@ def _migrate_sqlite_skill_schema() -> None:
     legacy_id_prefix = f"{legacy_key}_"
     with _sqlite_immediate_connection() as conn:
         _migrate_model_api_protocols(conn, tables)
+        _migrate_model_secret_references(conn, tables)
         _migrate_default_model_output_limit(conn, tables)
         _migrate_channel_binding_agents_backfill(conn, tables)
         _migrate_channel_scope_rebuild(conn, inspector, tables)
@@ -1555,6 +1556,15 @@ def _migrate_channel_account_key_schema(conn, tables: set[str]) -> None:
             text("INSERT INTO app_data_migrations (id) VALUES (:id)"),
             {"id": _CHANNEL_ACCOUNT_KEY_MIGRATION_ID},
         )
+
+
+def _migrate_model_secret_references(conn, tables: set[str]) -> None:
+    if "model_configs" not in tables:
+        return
+    columns = {str(row[1]) for row in conn.execute(text("PRAGMA table_info(model_configs)"))}
+    for name in ("secret_ref", "secret_ref_revision"):
+        if name not in columns:
+            conn.execute(text(f"ALTER TABLE model_configs ADD COLUMN {name} VARCHAR"))
 
 
 def _migrate_model_api_protocols(conn, tables: set[str]) -> None:

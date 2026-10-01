@@ -1,14 +1,16 @@
 from __future__ import annotations
 
 import copy
+from collections.abc import Mapping
 from dataclasses import dataclass
 from types import MappingProxyType
-from typing import Any, Literal, Mapping
+from typing import Any, Literal
 
 from fastapi import HTTPException
 from sqlmodel import Session
 
 from app.db.models import ModelConfig
+from app.llm.model_credentials import model_secret_binding
 from app.llm.model_protocols import (
     ModelApiProtocol,
     current_protocol_options,
@@ -32,6 +34,9 @@ class ResolvedModelConfig:
     security_revision: int
     purpose: Literal["runtime", "verification"]
     timeout_seconds: float | None = None
+    secret_ref: str | None = None
+    secret_ref_revision: str | None = None
+    secret_binding_generation: str | None = None
 
 
 def resolve_model_config_for_runtime(
@@ -41,7 +46,8 @@ def resolve_model_config_for_runtime(
     if not row.enabled:
         raise HTTPException(status_code=409, detail="MODEL_CONFIG_DISABLED")
     protocol = _protocol(row)
-    if row.trust_status == "legacy_trusted" or _is_implicit_legacy_openai(row, protocol):
+    model_secret_binding(row)
+    if not row.secret_ref and (row.trust_status == "legacy_trusted" or _is_implicit_legacy_openai(row, protocol)):
         if protocol is not ModelApiProtocol.OPENAI_CHAT_COMPLETIONS:
             raise HTTPException(status_code=409, detail="MODEL_CONFIG_VERIFICATION_REQUIRED")
     elif row.trust_status != "verified" or row.verified_fingerprint != _fingerprint(row):
@@ -85,6 +91,12 @@ def _snapshot(
 ) -> ResolvedModelConfig:
     options = current_protocol_options(row.protocol_options_json, protocol)
     legacy_extra_body = copy.deepcopy(row.extra_body_json or {})
+    binding = model_secret_binding(row)
+    if binding and purpose == "runtime" and (
+        row.trust_status != "verified"
+        or row.verified_fingerprint != _fingerprint(row, binding_generation=binding.generation)
+    ):
+        raise HTTPException(status_code=409, detail="MODEL_CONFIG_VERIFICATION_REQUIRED")
     return ResolvedModelConfig(
         id=row.id,
         tenant_id=row.tenant_id,
@@ -100,11 +112,16 @@ def _snapshot(
         security_revision=row.security_revision,
         purpose=purpose,
         timeout_seconds=None,
+        secret_ref=row.secret_ref,
+        secret_ref_revision=row.secret_ref_revision,
+        secret_binding_generation=binding.generation if binding else None,
     )
 
 
-def _fingerprint(row: ModelConfig) -> str:
+def _fingerprint(row: ModelConfig, *, binding_generation: str | None = None) -> str:
     protocol = _protocol(row)
+    if row.secret_ref and binding_generation is None:
+        binding_generation = model_secret_binding(row).generation
     return model_config_fingerprint(
         api_protocol=row.api_protocol,
         base_url=row.base_url,
@@ -112,6 +129,7 @@ def _fingerprint(row: ModelConfig) -> str:
         key_revision=row.key_revision,
         protocol_options=current_protocol_options(row.protocol_options_json, protocol),
         security_revision=row.security_revision,
+        credential_binding=binding_generation,
     )
 
 
@@ -140,13 +158,22 @@ def _freeze_value(value: Any) -> Any:
 
 
 def snapshot_model_config(
-    model_config: Any, *, min_output_tokens: int = 0
+    model_config: Any, *, min_output_tokens: int = 0, purpose: Literal["runtime", "verification"] | None = None
 ) -> ResolvedModelConfig:
     # ``min_output_tokens`` is retained only for source compatibility with
     # older callers.  Model configuration is the sole token-budget authority.
     del min_output_tokens
     if isinstance(model_config, ResolvedModelConfig):
         return model_config
+    binding = model_secret_binding(model_config)
+    selected_purpose = purpose or getattr(model_config, "purpose", "runtime")
+    if binding and selected_purpose == "runtime" and not model_config.enabled:
+        raise HTTPException(status_code=409, detail="MODEL_CONFIG_DISABLED")
+    if binding and selected_purpose == "runtime" and (
+        model_config.trust_status != "verified"
+        or model_config.verified_fingerprint != _fingerprint(model_config, binding_generation=binding.generation)
+    ):
+        raise HTTPException(status_code=409, detail="MODEL_CONFIG_VERIFICATION_REQUIRED")
     protocol = ModelApiProtocol(
         getattr(model_config, "api_protocol", "openai_chat_completions")
     )
@@ -154,7 +181,7 @@ def snapshot_model_config(
         id=str(getattr(model_config, "id", "")),
         tenant_id=str(getattr(model_config, "tenant_id", "")),
         api_protocol=protocol,
-        purpose=getattr(model_config, "purpose", "runtime"),
+        purpose=selected_purpose,
         api_key_encrypted=model_config.api_key_encrypted,
         base_url=model_config.base_url,
         model=model_config.model,
@@ -174,6 +201,9 @@ def snapshot_model_config(
         config_revision=getattr(model_config, "config_revision", 1),
         security_revision=getattr(model_config, "security_revision", 1),
         timeout_seconds=getattr(model_config, "timeout_seconds", None),
+        secret_ref=getattr(model_config, "secret_ref", None),
+        secret_ref_revision=getattr(model_config, "secret_ref_revision", None),
+        secret_binding_generation=binding.generation if binding else None,
     )
 
 

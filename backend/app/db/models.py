@@ -657,6 +657,8 @@ class ModelConfig(SQLModel, table=True):
     api_protocol: str = Field(default="openai_chat_completions", index=True)
     base_url: Optional[str] = None
     api_key_encrypted: str
+    secret_ref: Optional[str] = None
+    secret_ref_revision: Optional[str] = None
     model: str
     temperature: float = 0.2
     max_output_tokens: int = 8192

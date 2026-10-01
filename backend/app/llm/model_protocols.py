@@ -71,6 +71,7 @@ def model_config_fingerprint(
     key_revision: int,
     protocol_options: dict[str, Any],
     security_revision: int,
+    credential_binding: str | None = None,
 ) -> str:
     payload = {
         "fingerprint_version": 1,
@@ -81,6 +82,8 @@ def model_config_fingerprint(
         "protocol_options": protocol_options,
         "security_revision": security_revision,
     }
+    if credential_binding is not None:
+        payload["credential_binding"] = credential_binding
     canonical = json.dumps(
         payload,
         ensure_ascii=False,

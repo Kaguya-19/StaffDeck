@@ -13,6 +13,8 @@ class Settings(BaseSettings):
     demo_model_base_url: str = "http://localhost:52010/v1"
     demo_model_name: str = "qwen3.6-27b"
     demo_model_api_key: str = ""
+    # Tenant -> reference alias -> {env, revision}; credential bytes stay in process env.
+    model_secret_bindings: dict[str, dict[str, dict[str, str]]] = {}
     model_api_timeout_seconds: float = 600.0
     model_thinking_mode: str = ""
     model_thinking_models: str = ""
