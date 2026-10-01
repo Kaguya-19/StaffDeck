@@ -126,7 +126,11 @@ def model_descriptor(descriptor: CapabilityDescriptor) -> CapabilityDescriptor:
             if value not in (None, "", [], {}):
                 metadata[key] = value
     elif descriptor.kind == "knowledge":
-        allowed = descriptor.metadata.get("allowed_knowledge_base_ids") or []
+        # Snapshot descriptors use knowledge_base_ids after grant/PEP resolution.
+        # An explicit legacy allowlist, including an empty one, remains authoritative.
+        allowed = descriptor.metadata.get(
+            "allowed_knowledge_base_ids", descriptor.metadata.get("knowledge_base_ids", [])
+        ) or []
         metadata["authorized_knowledge_base_count"] = len(allowed)
     elif descriptor.kind == "general_skill":
         metadata["execution_policy"] = descriptor.metadata.get(

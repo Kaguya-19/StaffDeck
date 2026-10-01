@@ -52,6 +52,23 @@ def _catalog_chars(manifest: CapabilityManifest) -> int:
     )
 
 
+@pytest.mark.parametrize("metadata,count", [
+    ({"knowledge_base_ids": ["kb-snapshot"]}, 1),
+    ({"allowed_knowledge_base_ids": ["kb-legacy", "kb-other"]}, 2),
+    ({"allowed_knowledge_base_ids": [], "knowledge_base_ids": ["kb-snapshot"]}, 0),
+    ({"allowed_knowledge_base_ids": None, "knowledge_base_ids": ["kb-snapshot"]}, 0),
+    ({}, 0),
+])
+def test_knowledge_diagnostic_count_supports_authorized_snapshot_and_legacy(metadata, count):
+    descriptor = _descriptor("knowledge_search", kind="knowledge", metadata=metadata)
+    projected = model_descriptor(descriptor)
+    assert projected.metadata == {"authorized_knowledge_base_count": count}
+    assert descriptor.metadata == metadata
+    assert projected.available == descriptor.available
+    assert projected.capability_id == descriptor.capability_id
+    assert model_descriptor(descriptor.model_copy(update={"available": False})).metadata == {}
+
+
 def _forbidden_schema_paths(value: object, path: str = "$") -> list[str]:
     forbidden = {"default", "examples", "$comment"}
     matches: list[str] = []
