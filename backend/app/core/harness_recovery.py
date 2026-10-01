@@ -11,7 +11,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 import logging
 import threading
-from datetime import datetime
+from datetime import datetime, timezone
 
 from sqlalchemy import delete
 from sqlmodel import Session, select
@@ -40,6 +40,10 @@ RECOVERY_REPLY = (
 )
 
 
+def _lease_utc(value: datetime) -> datetime:
+    return value.replace(tzinfo=timezone.utc) if value.tzinfo is None else value.astimezone(timezone.utc)
+
+
 @dataclass(frozen=True)
 class HarnessRecoveryResult:
     run_count: int = 0
@@ -63,7 +67,7 @@ def recover_orphan_harness_runs(
     reclaimed only when no still-valid frame or run proves that work is alive.
     """
 
-    now = now or utc_now()
+    now = _lease_utc(now or utc_now())
     active_runs = list(
         db.exec(select(HarnessRunRecord).where(HarnessRunRecord.status == "running")).all()
     )
@@ -83,12 +87,12 @@ def recover_orphan_harness_runs(
     orphan_runs = [
         row
         for row in active_runs
-        if startup or row.lease_expires_at is None or row.lease_expires_at <= now
+        if startup or row.lease_expires_at is None or _lease_utc(row.lease_expires_at) <= now
     ]
     orphan_frames = [
         row
         for row in active_frames
-        if startup or row.lease_expires_at is None or row.lease_expires_at <= now
+        if startup or row.lease_expires_at is None or _lease_utc(row.lease_expires_at) <= now
     ]
     affected_session_keys = {
         (row.tenant_id, row.session_id) for row in orphan_runs
@@ -100,7 +104,7 @@ def recover_orphan_harness_runs(
     live_sessions = {
         row.session_id
         for row in [*active_runs, *active_frames]
-        if row.lease_expires_at is not None and row.lease_expires_at > now
+        if row.lease_expires_at is not None and _lease_utc(row.lease_expires_at) > now
     }
     orphan_turns = [
         row
@@ -108,7 +112,7 @@ def recover_orphan_harness_runs(
         if startup
         or (row.tenant_id, row.session_id) in affected_session_keys
         or (
-            row.lease_expires_at <= now
+            _lease_utc(row.lease_expires_at) <= now
             and row.session_id not in live_sessions
         )
     ]

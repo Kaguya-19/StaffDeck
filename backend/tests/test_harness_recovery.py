@@ -201,3 +201,23 @@ def test_runtime_sweeper_recovers_expired_execution() -> None:
         turn = db.get(HarnessTurnRecord, "hturn-orphan")
         assert turn is not None and turn.error_json["code"] == "HARNESS_EXECUTION_LOST"
         assert db.get(ChatSession, "session-orphan").status == "active"
+
+
+def test_reopened_expired_turn_preserves_live_frame_then_recovers_once() -> None:
+    engine = _engine()
+    now = utc_now()
+    with Session(engine) as db:
+        _add_active_execution(db, lease_expires_at=now + timedelta(minutes=10))
+        turn = db.get(HarnessTurnRecord, "hturn-orphan")
+        turn.lease_expires_at = now - timedelta(seconds=1)
+        db.add(turn)
+        db.commit()
+    with Session(engine) as db:
+        assert db.get(HarnessTurnRecord, "hturn-orphan").lease_expires_at.tzinfo is None
+        assert recover_orphan_harness_runs(db, now=now).turn_count == 0
+        assert db.get(HarnessTurnRecord, "hturn-orphan").status == "started"
+        result = recover_orphan_harness_runs(db, now=now + timedelta(minutes=10))
+        assert (result.run_count, result.frame_count, result.turn_count, result.message_count) == (1, 1, 1, 1)
+    with Session(engine) as db:
+        assert db.get(HarnessTurnRecord, "hturn-orphan").status == "failed"
+        assert recover_orphan_harness_runs(db, now=now + timedelta(minutes=11)).message_count == 0
