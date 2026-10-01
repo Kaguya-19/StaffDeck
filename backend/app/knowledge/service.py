@@ -1100,7 +1100,6 @@ class KnowledgeService:
                             },
                         )
                         self.db.add(row)
-                        self.db.flush()
                         related_rows.append(row)
                         chunk_ids_by_bucket.setdefault(bucket.id, []).append(row.id)
                         count += 1
@@ -1494,8 +1493,13 @@ class KnowledgeService:
     def _raise_if_ingest_cancelled(self, job: KnowledgeIngestJob | None) -> None:
         if job is None:
             return
-        self.db.refresh(job)
-        if job.status in CANCELLING_INGEST_STATUSES:
+        # Pending evidence rows stay atomic until the stage commits. Cancellation
+        # reads must not flush them and hold a writer throughout chunk construction.
+        with self.db.no_autoflush:
+            status = self.db.exec(
+                select(KnowledgeIngestJob.status).where(KnowledgeIngestJob.id == job.id)
+            ).first()
+        if status in CANCELLING_INGEST_STATUSES:
             raise KnowledgeIngestCancelled("入库任务已取消")
 
     def _finalize_cancelled_job(self, job: KnowledgeIngestJob, detail: str) -> None:
