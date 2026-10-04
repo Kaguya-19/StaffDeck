@@ -200,7 +200,16 @@ class PublicStaffDeckFacadeTests(unittest.TestCase):
 
     def test_knowledge_document_update_keeps_target_branch_and_original_conflict_field(self) -> None:
         body = {"content_md": "new content", "expected_updated_at": "2026-09-27T01:02:03"}
+        visible_version = SimpleNamespace(id="version")
+        visible_document = SimpleNamespace(
+            id="doc", tenant_id="tenant", knowledge_base_id="base",
+            knowledge_base_version_id="version",
+        )
+        self.db = SimpleNamespace(get=lambda model, key: visible_document if key == "doc" else None)
         with patch.object(public_resources, "enforce_public_knowledge_pep") as pep, patch.object(
+            public_resources.internal_knowledge_bases, "_visible_knowledge_version",
+            return_value=visible_version,
+        ), patch.object(
             public_resources.internal_knowledge, "update_document", return_value={"id": "doc"}
         ) as owner:
             result = public_resources.update_knowledge_document(
@@ -213,7 +222,7 @@ class PublicStaffDeckFacadeTests(unittest.TestCase):
         )
         self.assertEqual(owner.call_args.args[0], "doc")
         self.assertEqual(owner.call_args.args[1].expected_updated_at, body["expected_updated_at"])
-        self.assertEqual(owner.call_args.args[4], "target-agent")
+        self.assertEqual(owner.call_args.kwargs["agent_id"], "target-agent")
 
     def test_public_knowledge_list_rejects_member_without_native_view_permission(self) -> None:
         engine = create_engine("sqlite://", connect_args={"check_same_thread": False}, poolclass=StaticPool)
