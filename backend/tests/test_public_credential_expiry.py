@@ -6,12 +6,50 @@ import sys
 import pytest
 from sqlmodel import Session, create_engine
 
+from app.agents.schema import AgentAPICredentialCreateRequest
+from app.api.agents import create_agent_api_credential
 from app.api.auth import AccountAPICredentialCreateRequest, create_account_api_credential
 from app.db.models import APICredential, User
 from app.public_api import auth
 from app.public_api.auth import principal_for_credential
 from app.public_api.errors import PublicAPIError
 from test_public_api_v1 import _client
+
+
+@pytest.mark.parametrize("offset", [0, 8, -5])
+def test_normalize_credential_expiry_aware_inputs_to_naive_utc(offset):
+    instant = datetime(2030, 1, 1, tzinfo=UTC)
+    aware = (instant + timedelta(seconds=10)).astimezone(timezone(timedelta(hours=offset)))
+    normalized = auth.normalize_credential_expiry(aware)
+    assert normalized == instant.replace(tzinfo=None) + timedelta(seconds=10)
+    assert normalized.tzinfo is None
+
+
+def test_agent_credential_aware_expiry_revalidates_with_public_principal(monkeypatch):
+    client, engine, _admin_token = _client(monkeypatch)
+    instant = datetime(2030, 1, 1, tzinfo=UTC)
+    monkeypatch.setattr(auth, "utc_now", lambda: instant + timedelta(seconds=11))
+    with Session(engine) as db:
+        admin = db.get(User, "user_api_admin")
+        created = create_agent_api_credential(
+            "agent_api",
+            AgentAPICredentialCreateRequest(
+                tenant_id="tenant_api",
+                name="aware-expiry",
+                access="runtime",
+                expires_at=(instant + timedelta(seconds=10)).astimezone(
+                    timezone(timedelta(hours=8))
+                ),
+            ),
+            db,
+            admin,
+        )
+        stored = db.get(APICredential, created.id)
+        assert stored.expires_at == instant.replace(tzinfo=None) + timedelta(seconds=10)
+        assert stored.expires_at.tzinfo is None
+        with pytest.raises(PublicAPIError) as denied:
+            principal_for_credential(db, created.id)
+        assert (denied.value.status_code, denied.value.code) == (401, "API_KEY_EXPIRED")
 
 
 @pytest.mark.parametrize("creation", ["account", "client"])

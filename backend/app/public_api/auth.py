@@ -74,8 +74,10 @@ def _api_key_principal(token: str, db: Session) -> PublicPrincipal:
 def normalize_credential_expiry(value: datetime | None) -> datetime | None:
     if value is None:
         return None
-    # SQLite returns stored UTC timestamps without timezone information.
-    return value.replace(tzinfo=UTC) if value.tzinfo is None else value.astimezone(UTC)
+    # Persist and compare credential deadlines as naive UTC, matching utc_now()
+    # and SQLite's timestamp representation while accepting aware API inputs.
+    normalized = value.replace(tzinfo=UTC) if value.tzinfo is None else value.astimezone(UTC)
+    return normalized.replace(tzinfo=None)
 
 
 def principal_for_credential(db: Session, credential_id: str) -> PublicPrincipal:
@@ -83,7 +85,7 @@ def principal_for_credential(db: Session, credential_id: str) -> PublicPrincipal
     credential = db.get(APICredential, credential_id)
     if credential is None:
         raise PublicAPIError(401, "INVALID_API_KEY", "The API credential is unavailable.")
-    now = utc_now()
+    now = normalize_credential_expiry(utc_now())
     if credential.status != "active" or credential.revoked_at is not None:
         raise PublicAPIError(401, "API_KEY_REVOKED", "The API key has been revoked.")
     expiry = normalize_credential_expiry(credential.expires_at)

@@ -72,7 +72,7 @@ from app.db.models import (
     utc_now,
     User,
 )
-from app.public_api.auth import generate_api_key
+from app.public_api.auth import generate_api_key, normalize_credential_expiry
 from app.public_api.credential_profiles import (
     AGENT_KEY_ALLOWED_SCOPES,
     agent_access_for_scopes,
@@ -274,7 +274,7 @@ def create_agent_api_credential(
         key_prefix=prefix,
         key_digest=digest,
         scopes_json=scopes_for_agent_access(request.access),
-        expires_at=request.expires_at,
+        expires_at=normalize_credential_expiry(request.expires_at),
     )
     db.add(row)
     db.commit()
