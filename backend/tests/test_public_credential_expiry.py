@@ -26,7 +26,7 @@ def test_normalize_credential_expiry_aware_inputs_to_naive_utc(offset):
 
 
 def test_agent_credential_aware_expiry_revalidates_with_public_principal(monkeypatch):
-    client, engine, _admin_token = _client(monkeypatch)
+    _client_value, engine, _admin_token = _client(monkeypatch)
     instant = datetime(2030, 1, 1, tzinfo=UTC)
     monkeypatch.setattr(auth, "utc_now", lambda: instant + timedelta(seconds=11))
     with Session(engine) as db:
@@ -47,6 +47,10 @@ def test_agent_credential_aware_expiry_revalidates_with_public_principal(monkeyp
         stored = db.get(APICredential, created.id)
         assert stored.expires_at == instant.replace(tzinfo=None) + timedelta(seconds=10)
         assert stored.expires_at.tzinfo is None
+        # Exercise deferred validation against an in-memory legacy aware value.
+        stored.expires_at = (instant + timedelta(seconds=10)).astimezone(
+            timezone(timedelta(hours=-5))
+        )
         with pytest.raises(PublicAPIError) as denied:
             principal_for_credential(db, created.id)
         assert (denied.value.status_code, denied.value.code) == (401, "API_KEY_EXPIRED")
