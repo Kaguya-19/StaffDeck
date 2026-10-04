@@ -401,7 +401,12 @@ def list_account_api_credentials(
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_session),
 ) -> list[AccountAPICredentialRead]:
-    client = _ensure_account_api_client(db, current_user.tenant_id, current_user)
+    # Credential discovery is a read path used by concurrent public owner
+    # verification requests. Do not repair or create the account client here:
+    # that write transaction serializes otherwise independent SDK operations on
+    # SQLite. Account settings and credential creation retain the mutating
+    # ensure path; discovery only reports an existing client.
+    client = _find_account_api_client(db, current_user.tenant_id, current_user.id)
     if not client:
         return []
     rows = db.exec(
