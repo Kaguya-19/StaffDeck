@@ -19,7 +19,11 @@ from staffdeck_harness.bridge import engine_host
 from staffdeck_harness.bridge.capability_mcp import ActivationRegistry
 from staffdeck_harness.bridge.phases import PhaseHost, parse_json_object
 from staffdeck_harness.bridge.process_pool import ProcessPool, pool_key
-from staffdeck_harness.bridge.task_agent import HarnessV3Runtime, IdlePhaseHost
+from staffdeck_harness.bridge.task_agent import (
+    HarnessV3Runtime,
+    IdlePhaseHost,
+    _should_stop_engine_turn,
+)
 from staffdeck_harness.bridge.worker import HarnessV3WorkerConfig
 
 
@@ -142,6 +146,16 @@ def test_runtime_acquire_registers_idle_token_and_release_parks_it():
     assert isinstance(reg.get(pooled.token).host, IdlePhaseHost), "parked, not released: the warm process keeps its token"
     rt.stop()
     assert reg.get(pooled.token) is None, "stopping the runtime drops the tokens with the processes"
+
+
+@pytest.mark.parametrize("status", ["completed", "handoff", "failed", "cancelled"])
+def test_terminal_control_result_closes_engine_turn(status):
+    assert _should_stop_engine_turn({"status": status}) is True
+
+
+def test_awaiting_user_keeps_engine_turn_warm_for_session_reuse():
+    assert _should_stop_engine_turn({"status": "awaiting_user"}) is False
+    assert _should_stop_engine_turn(None) is False
 
 
 def test_phase_host_refuses_tools_but_serves_the_gateway():

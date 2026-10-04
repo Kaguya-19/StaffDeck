@@ -336,6 +336,18 @@ def _attachment_notice(image_payloads: list[Any]) -> str:
     return f"（本轮有 {n} 张图片附件，已由 StaffDeck 模型网关作为视觉输入提供给当前模型；不要通过文本推测图片内容。）"
 
 
+def _should_stop_engine_turn(finish: dict[str, Any] | None) -> bool:
+    """Stop the engine early only for terminal control results.
+
+    ``awaiting_user`` suspends a durable SOP loop but does not finish the native
+    engine turn. Waiting for its idle acknowledgement keeps a healthy warm worker
+    and its native session reusable. Other control results must stop immediately
+    so a still-running model turn is never returned to the pool.
+    """
+
+    return finish is not None and finish.get("status") != "awaiting_user"
+
+
 class HarnessV3TaskAgent:
     """Same call contract as ``app.core.harness_agent.HarnessTaskAgent.run``."""
 
@@ -645,8 +657,18 @@ class HarnessV3TaskAgent:
 
             def execution_turn(blocks):
                 """Every execution/supervision exit reaches the same repair handoff."""
+                def finished() -> bool:
+                    # ``awaiting_user`` is a durable suspension point, not a terminal
+                    # engine turn. Let Harness reach its idle acknowledgement so the
+                    # warm worker/session remains reusable for the next user turn.
+                    # Terminal SOP control results still stop immediately; returning a
+                    # still-running worker to the pool would leak an active model turn.
+                    return _should_stop_engine_turn(execution_host.capabilities.slot.finish)
+
                 try:
-                    outcome = self._run_engine_turn(proc, engine_session, blocks, stop_requested, trace)
+                    outcome = self._run_engine_turn(
+                        proc, engine_session, blocks, stop_requested, trace, finished=finished
+                    )
                 except HarnessExecutionCancelled:
                     if cancelled() or not (execution_host.control_blocked or
                             (execution_host.argument_repair or {}).get('phase') == 'sop_result'):
