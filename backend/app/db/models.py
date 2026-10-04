@@ -9,7 +9,10 @@ from sqlmodel import Field, SQLModel
 
 
 def utc_now() -> datetime:
-    return datetime.now(UTC)
+    # SQLite's DateTime adapter stores and materializes values without timezone
+    # metadata. Keep the canonical persisted representation naive UTC so values
+    # remain directly comparable after a readback from SQLite.
+    return datetime.now(UTC).replace(tzinfo=None)
 
 
 def new_id(prefix: str) -> str:

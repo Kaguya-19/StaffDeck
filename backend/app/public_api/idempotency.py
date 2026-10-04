@@ -50,9 +50,12 @@ def replay_idempotent_response(
         return None
     # SQLite may decode UTC timestamps without timezone information.
     expires_at = row.expires_at
-    if expires_at.tzinfo is None:
-        expires_at = expires_at.replace(tzinfo=UTC)
-    if expires_at <= utc_now():
+    if expires_at.tzinfo is not None:
+        expires_at = expires_at.astimezone(UTC).replace(tzinfo=None)
+    now = utc_now()
+    if now.tzinfo is not None:
+        now = now.astimezone(UTC).replace(tzinfo=None)
+    if expires_at <= now:
         db.delete(row)
         db.commit()
         return None

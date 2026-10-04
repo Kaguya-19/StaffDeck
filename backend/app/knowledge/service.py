@@ -456,8 +456,8 @@ class KnowledgeService:
         if job.status != "cancel_requested":
             return None
         last_update = job.updated_at or job.created_at
-        if last_update.tzinfo is None:
-            last_update = last_update.replace(tzinfo=timezone.utc)
+        if last_update.tzinfo is not None:
+            last_update = last_update.astimezone(timezone.utc).replace(tzinfo=None)
         if utc_now() - last_update < grace_period:
             return None
         self._finalize_cancelled_job(job, "入库任务已取消")
