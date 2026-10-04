@@ -98,4 +98,56 @@ def create_public_api_app() -> FastAPI:
     app.include_router(operations.router)
     app.include_router(webhooks.router)
     app.include_router(examples.router)
+    _expose_included_routes_for_legacy_introspection(app)
     return app
+
+
+def _expose_included_routes_for_legacy_introspection(app: FastAPI) -> None:
+    """Keep ``app.routes`` introspectable across FastAPI router implementations.
+
+    FastAPI 0.139 stores included routers as lazy ``_IncludedRouter`` entries.
+    That is correct for request dispatch and OpenAPI generation, but older
+    integration contracts inspect ``app.routes`` directly and expect concrete
+    paths. Add hidden metadata-only copies for those callers while leaving the
+    lazy routes first in dispatch order.
+    """
+    try:
+        from fastapi.routing import APIRoute, _IncludedRouter
+    except ImportError:  # pragma: no cover - older FastAPI exposes concrete routes.
+        return
+
+    for included in list(app.router.routes):
+        if not isinstance(included, _IncludedRouter):
+            continue
+        for context in included.effective_route_contexts():
+            original = context.original_route
+            if not isinstance(original, APIRoute):
+                continue
+            app.router.add_api_route(
+                context.path,
+                context.endpoint,
+                response_model=context.response_model,
+                status_code=context.status_code,
+                tags=context.tags,
+                dependencies=context.dependencies,
+                summary=context.summary,
+                description=context.description,
+                response_description=context.response_description,
+                responses=context.responses,
+                deprecated=context.deprecated,
+                methods=context.methods,
+                operation_id=context.operation_id,
+                response_model_include=context.response_model_include,
+                response_model_exclude=context.response_model_exclude,
+                response_model_by_alias=context.response_model_by_alias,
+                response_model_exclude_unset=context.response_model_exclude_unset,
+                response_model_exclude_defaults=context.response_model_exclude_defaults,
+                response_model_exclude_none=context.response_model_exclude_none,
+                include_in_schema=False,
+                response_class=context.response_class,
+                name=context.name,
+                callbacks=context.callbacks,
+                openapi_extra=context.openapi_extra,
+                generate_unique_id_function=context.generate_unique_id_function,
+                strict_content_type=context.strict_content_type,
+            )
