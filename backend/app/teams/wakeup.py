@@ -553,7 +553,7 @@ def recover_orphaned_wake_events(
     for row in rows:
         previous_updated_at = row.updated_at
         result = db.exec(
-            update(TeamWakeEvent)
+            update(TeamWakeEvent).execution_options(synchronize_session=False)
             .where(
                 TeamWakeEvent.id == row.id,
                 TeamWakeEvent.status == "claimed",

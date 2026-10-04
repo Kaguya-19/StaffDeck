@@ -129,12 +129,20 @@ def module_policy(kind: str, *, use_endpoints: tuple[str, ...] = ()):
 
 def install_response_filters(app: Any) -> None:
     """Filter module catalogs after OSS visibility checks, before bytes leave the API."""
-    for route in app.routes:
+    def iter_routes(routes):
+        for route in routes:
+            included = getattr(route, "original_router", None)
+            if included is not None:
+                yield from iter_routes(included.routes)
+            else:
+                yield route
+
+    for route in iter_routes(app.routes):
         if not isinstance(route, APIRoute):
             continue
-        original = route.get_route_handler()
+        original_get_route_handler = route.get_route_handler
 
-        async def handle(request: Request, endpoint=original):
+        async def filter_response(request: Request, endpoint):
             response = await endpoint(request)
             state = getattr(request.state, "module_policy", None)
             if not state or request.method != "GET" or response.status_code != 200:
@@ -162,4 +170,13 @@ def install_response_filters(app: Any) -> None:
             response.headers["content-length"] = str(len(response.body))
             return response
 
-        route.app = request_response(handle)
+        def wrapped_get_route_handler(original=original_get_route_handler):
+            endpoint = original()
+
+            async def handle(request: Request):
+                return await filter_response(request, endpoint)
+
+            return handle
+
+        route.get_route_handler = wrapped_get_route_handler
+        route.app = request_response(wrapped_get_route_handler())
