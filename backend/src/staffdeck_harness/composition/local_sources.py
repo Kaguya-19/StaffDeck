@@ -127,9 +127,17 @@ class LocalSopSource:
         if context.session_id:
             from sqlmodel import Session
 
+            # ``visible_published_skills`` may materialize a missing private branch.
+            # Release the request session's read-only SQLite transaction first;
+            # otherwise a fresh connection cannot acquire the write lock while
+            # the caller is waiting for this committed projection.
+            if self.db.in_transaction() and not (self.db.new or self.db.dirty or self.db.deleted):
+                self.db.commit()
             with Session(self.db.get_bind()) as fresh:
                 agent = get_agent(fresh, context.tenant_id, staff.staff_id)
-                return _sops(fresh, context.tenant_id, agent)
+                views = _sops(fresh, context.tenant_id, agent)
+                fresh.commit()
+                return views
         agent = get_agent(self.db, context.tenant_id, staff.staff_id)
         return _sops(self.db, context.tenant_id, agent)
 

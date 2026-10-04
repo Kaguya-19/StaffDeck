@@ -87,3 +87,47 @@ def test_runtime_sop_source_reads_committed_branch_after_publication(tmp_path) -
     ]
     stale_request.close()
     engine.dispose()
+
+
+def test_runtime_sop_source_materializes_missing_branch_without_sqlite_lock(tmp_path) -> None:
+    engine = create_engine(f"sqlite:///{tmp_path / 'staffdeck.sqlite3'}")
+    SQLModel.metadata.create_all(engine)
+    with Session(engine) as db:
+        db.add_all([
+            Tenant(id="tenant", name="Tenant"),
+            AgentProfile(id="agent", tenant_id="tenant", name="Project", status="active"),
+            Skill(
+                id="skill-row",
+                tenant_id="tenant",
+                skill_id="project_delivery_plan",
+                version="1.0.0",
+                name="Project delivery plan",
+                content_json=_content("1.0.0", ["n1_collect"]),
+                status="published",
+            ),
+            AgentResourceBinding(
+                id="binding",
+                tenant_id="tenant",
+                agent_id="agent",
+                resource_type="skill",
+                resource_id="skill-row",
+                status="active",
+                metadata_json={"scope": "agent_private"},
+            ),
+        ])
+        db.commit()
+
+        # A normal turn has already opened a clean read transaction before the
+        # runtime asks the fresh projection to materialize its first branch.
+        db.exec(select(AgentProfile).where(AgentProfile.id == "agent")).one()
+        source = LocalSopSource(db)
+        views = source.resolve(
+            SourceContext("tenant", "agent", session_id="new-session"),
+            SimpleNamespace(staff_id="agent"),
+        )
+        assert [view.skill_id for view in views] == ["project_delivery_plan"]
+
+        with Session(engine) as check:
+            branch = check.exec(select(AgentSkillBranch)).one()
+            assert branch.skill_id == "project_delivery_plan"
+    engine.dispose()
