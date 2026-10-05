@@ -7,6 +7,7 @@ import re
 from dataclasses import dataclass
 from datetime import timedelta, timezone
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any
 
 from pydantic import ValidationError
@@ -222,11 +223,12 @@ class KnowledgeIngestCancelled(RuntimeError):
     """Raised inside the ingest worker when a persisted job is cancelled."""
 
 
-def extract_ingest_text(job: KnowledgeIngestJob, metadata: dict[str, Any], content: bytes, db: Session | None = None) -> tuple[str, str]:
-    """Public jobs use the configured PD file Port; native jobs retain SD parsing."""
+def _public_ingest_identity(job: KnowledgeIngestJob, metadata: dict[str, Any],
+                            db: Session | None) -> dict[str, Any] | None:
+    """Recheck the persisted upload authority before calling a public host Port."""
     host_origin = metadata.get("_pilotdeck_host")
     if host_origin is None:
-        return extract_text(job.filename, content)
+        return None
     if not isinstance(host_origin, dict) or not all(
         isinstance(host_origin.get(key), str) and host_origin[key]
         for key in ("agent_id", "actor_user_id")
@@ -259,6 +261,14 @@ def extract_ingest_text(job: KnowledgeIngestJob, metadata: dict[str, Any], conte
         enforce_agent_access(principal, host_origin["agent_id"], write=True)
         ensure_public_agent(db, principal, host_origin["agent_id"])
         ensure_agent_scope_manager(db, principal.tenant_id, host_origin["agent_id"], principal.actor_user)
+    return host_origin
+
+
+def extract_ingest_text(job: KnowledgeIngestJob, metadata: dict[str, Any], content: bytes, db: Session | None = None) -> tuple[str, str]:
+    """Public jobs use the configured PD file Port; native jobs retain SD parsing."""
+    host_origin = _public_ingest_identity(job, metadata, db)
+    if host_origin is None:
+        return extract_text(job.filename, content)
     from app.public_api.pilotdeck_domain_host import require_pilotdeck_domain_host
     parsed = require_pilotdeck_domain_host().file_parse(
         tenant_id=job.tenant_id,
@@ -1157,7 +1167,16 @@ class KnowledgeService:
         buckets: list[KnowledgeBucket],
         job: KnowledgeIngestJob,
     ) -> None:
-        model_config = self._default_model_config(tenant_id)
+        host_origin = _public_ingest_identity(job, job.metadata_json or {}, self.db)
+        if host_origin is not None:
+            from app.public_api.pilotdeck_harness_model import select_harness_model
+
+            model_config = select_harness_model(SimpleNamespace(
+                tenant_id=job.tenant_id, user_id=host_origin["actor_user_id"],
+                staff_id=host_origin["agent_id"],
+            ))
+        else:
+            model_config = self._default_model_config(tenant_id)
         if not model_config:
             return
         self._raise_if_ingest_cancelled(job)
